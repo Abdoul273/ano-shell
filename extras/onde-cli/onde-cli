@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+"""Point d'entrée CLI pour Onde — lecteur de musique interactif dans le terminal."""
+import sys
+from pathlib import Path
+
+# Ajouter la racine du projet pour importer le module onde
+RACINE = Path(__file__).resolve().parent
+if str(RACINE) not in sys.path:
+    sys.path.insert(0, str(RACINE))
+
+from onde.cli import main
+
+if __name__ == "__main__":
+    main()

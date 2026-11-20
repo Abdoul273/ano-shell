@@ -18,6 +18,6 @@ jobs:
       - name: Lint CLI with ruff
         run: ruff check cli/ tests/
       - name: Syntax check scripts
-        run: bash -n install uninstall
+        run: bash -n bootstrap.sh install uninstall
       - name: Run pytest suite
         run: pytest -q tests/

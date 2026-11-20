@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # ============================================================================
-#  Ano Shell — Installateur 1-clic autonome (zéro dépendance Caelestia)
+#  Ano Shell — Installateur 1-clic complet (Arch « no desktop » ou Hyprland)
 #  https://github.com/Abdoul273/ano-shell
 #
 #  Usage :
-#    ./install [--yes] [--no-deps] [--standalone-hypr] [--migrate-caelestia] [--dry-run] [--help]
+#    ./install [--full] [--yes] [--no-deps] [--no-build] [--rebuild]
+#              [--standalone-hypr] [--migrate-caelestia] [--dry-run] [--help]
 # ============================================================================
 
 set -euo pipefail
@@ -13,16 +14,22 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKUP_DIR="$HOME/.local/share/ano-shell/backups/$(date +%Y%m%d-%H%M%S)"
 MANIFEST="$BACKUP_DIR/manifest"
 
+FULL=0
 YES=0
 NO_DEPS=0
+NO_BUILD=0
+REBUILD=0
 STANDALONE_HYPR=0
 MIGRATE_CAELESTIA=0
 DRY_RUN=0
 
 for arg in "$@"; do
     case "$arg" in
+        --full) FULL=1 ;;
         --yes|-y) YES=1 ;;
         --no-deps) NO_DEPS=1 ;;
+        --no-build) NO_BUILD=1 ;;
+        --rebuild) REBUILD=1 ;;
         --standalone-hypr) STANDALONE_HYPR=1 ;;
         --migrate-caelestia) MIGRATE_CAELESTIA=1 ;;
         --dry-run) DRY_RUN=1 ;;
@@ -47,6 +54,21 @@ run() {
         printf "  [dry-run] %s\n" "$*"
     else
         "$@"
+    fi
+}
+
+ask() {
+    local prompt="$1" default="${2:-o}" reply=""
+    if (( YES || DRY_RUN )); then
+        [[ "$default" == "o" ]]
+        return
+    fi
+    if [[ "$default" == "o" ]]; then
+        read -r -p "  $prompt [O/n] " reply || true
+        [[ ! "$reply" =~ ^[Nn] ]]
+    else
+        read -r -p "  $prompt [o/N] " reply || true
+        [[ "$reply" =~ ^[OoYy] ]]
     fi
 }
 
@@ -76,17 +98,182 @@ install_item() {
     cp -a "$src" "$dst"
 }
 
+# Détection automatique d'un Arch Linux vierge (« no desktop »)
+if (( ! NO_DEPS )) && { ! command -v Hyprland >/dev/null 2>&1 || ! command -v qs >/dev/null 2>&1; }; then
+    FULL=1
+fi
+
+PACMAN_FLAGS=(--needed)
+(( YES )) && PACMAN_FLAGS+=(--noconfirm)
+
+install_system_packages() {
+    step "Installation des paquets Arch Linux officiels (Hyprland, Wayland, audio, applis)"
+    local pkgs=(
+        # Bureau Wayland / Hyprland + portails + session
+        hyprland xdg-desktop-portal-hyprland xdg-desktop-portal-gtk
+        polkit-gnome gnome-keyring sddm xdg-user-dirs
+        # Audio, Bluetooth, Réseau, Alimentation, Capteurs
+        pipewire pipewire-pulse pipewire-alsa wireplumber
+        bluez bluez-utils networkmanager power-profiles-daemon upower
+        brightnessctl ddcutil lm_sensors fftw libqalculate libpipewire
+        # Qt6 & outils de compilation des plugins AnoShell.*
+        cmake ninja pkgconf qt6-base qt6-declarative qt6-wayland qt6-svg
+        qt6-imageformats qt6-multimedia qt6-multimedia-ffmpeg qt6-shadertools
+        # Applis & environnement terminal complet (Nautilus, Kitty, Fastfetch, Fish, Starship, Onde CLI)
+        nautilus sushi kitty fastfetch fish starship eza zoxide adw-gtk-theme
+        mpv ffmpeg yt-dlp
+        # Outils Wayland & Python (ano-shell + onde-cli)
+        python python-pip python-pillow python-rich python-mutagen
+        python-numpy python-scipy python-flask
+        grim slurp wl-clipboard cliphist swappy libnotify dconf
+        # Polices
+        ttf-jetbrains-mono-nerd ttf-cascadia-code-nerd noto-fonts noto-fonts-emoji
+    )
+    run sudo pacman -Syu "${PACMAN_FLAGS[@]}" "${pkgs[@]}"
+    ok "Paquets officiels Arch installés"
+}
+
+ensure_aur_helper() {
+    if command -v yay >/dev/null 2>&1; then
+        AUR_HELPER="yay"
+        return
+    fi
+    if command -v paru >/dev/null 2>&1; then
+        AUR_HELPER="paru"
+        return
+    fi
+    step "Installation automatique de yay-bin (assistant AUR)"
+    if (( DRY_RUN )); then
+        printf "  [dry-run] clone + makepkg -si yay-bin\n"
+        AUR_HELPER="yay"
+        return
+    fi
+    local tmp
+    tmp="$(mktemp -d)"
+    git clone --depth 1 https://aur.archlinux.org/yay-bin.git "$tmp/yay-bin"
+    (cd "$tmp/yay-bin" && makepkg -si --noconfirm)
+    rm -rf "$tmp"
+    AUR_HELPER="yay"
+    ok "yay-bin installé"
+}
+
+install_aur_packages() {
+    ensure_aur_helper
+    step "Installation des paquets AUR (Quickshell, Material You, Darkly, QtEngine, polices)"
+    local aur_flags=(--needed)
+    (( YES )) && aur_flags+=(--noconfirm)
+
+    # Indispensables
+    run "$AUR_HELPER" -S "${aur_flags[@]}" quickshell-git python-materialyoucolor
+
+    # Recommandés (chacun tolérant en cas de souci AUR temporaire)
+    local opt_aur=(
+        gpu-screen-recorder
+        darkly-bin
+        qtengine
+        ttf-material-symbols-variable
+        ttf-rubik-vf
+    )
+    for pkg in "${opt_aur[@]}"; do
+        if ! pacman -Q "$pkg" >/dev/null 2>&1; then
+            run "$AUR_HELPER" -S "${aur_flags[@]}" "$pkg" || warn "Paquet AUR optionnel ignoré : $pkg"
+        fi
+    done
+    ok "Paquets AUR traités"
+}
+
+build_cpp_plugins() {
+    if (( NO_BUILD )); then
+        return
+    fi
+    if [[ -d /usr/lib/qt6/qml/AnoShell ]] && (( ! REBUILD )); then
+        ok "Plugins C++ AnoShell.* déjà installés (utilisez --rebuild pour recompiler)"
+        return
+    fi
+    step "Compilation et installation des plugins C++ natifs (AnoShell.* + AnoShell.Shapes + shaders)"
+    run cmake -B "$ROOT/build" -S "$ROOT" -G Ninja \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DCMAKE_INSTALL_SYSCONFDIR=/etc
+    run cmake --build "$ROOT/build"
+    run sudo cmake --install "$ROOT/build"
+
+    if [[ -f "$ROOT/packaging/pacman/ano-shell-qt-check.hook" ]]; then
+        run sudo install -Dm644 "$ROOT/packaging/pacman/ano-shell-qt-check.hook" \
+            /usr/share/libalpm/hooks/ano-shell-qt-check.hook
+    fi
+    ok "Plugins C++ et shaders installés dans /usr/lib/qt6/qml/AnoShell"
+}
+
+install_cursor() {
+    step "Installation du curseur macOS (apple_cursor)"
+    local dest="$HOME/.local/share/icons/macOS"
+    if [[ -d "$dest/cursors" ]]; then
+        ok "Curseur macOS déjà présent"
+        return
+    fi
+    if (( DRY_RUN )); then
+        printf "  [dry-run] télécharge apple_cursor v2.0.1 -> %s\n" "$dest"
+        return
+    fi
+    local tmp
+    tmp="$(mktemp -d)"
+    if curl -sfL -o "$tmp/macOS.tar.xz" "https://github.com/ful1e5/apple_cursor/releases/download/v2.0.1/macOS.tar.xz" \
+        && tar -xJf "$tmp/macOS.tar.xz" -C "$tmp" 2>/dev/null; then
+        mkdir -p "$HOME/.local/share/icons" "$HOME/.icons/default"
+        rm -rf "$dest"
+        cp -r "$tmp/macOS" "$dest"
+        printf '[Icon Theme]\nInherits=macOS\n' > "$HOME/.icons/default/index.theme"
+        gsettings set org.gnome.desktop.interface cursor-theme macOS 2>/dev/null || true
+        ok "Curseur macOS installé"
+    else
+        warn "Téléchargement du curseur impossible (hors ligne ?) : curseur par défaut conservé."
+    fi
+    rm -rf "$tmp"
+}
+
+install_qtengine_config() {
+    local dst="$HOME/.config/qtengine/config.json"
+    if [[ -f "$dst" ]]; then
+        return
+    fi
+    if (( DRY_RUN )); then
+        printf "  [dry-run] configure %s (Darkly + ano-shell.colors)\n" "$dst"
+        return
+    fi
+    mkdir -p "$(dirname "$dst")"
+    cat > "$dst" <<EOF
+{
+    "theme": {
+        "colorScheme": "$HOME/.config/qtengine/ano-shell.colors",
+        "iconTheme": "Adwaita",
+        "style": "Darkly"
+    }
+}
+EOF
+    ok "Configuration qtengine (style Darkly) créée"
+}
+
+# ============================================================================
+#  Programme principal
+# ============================================================================
+
 step "Vérification de l'environnement"
-command -v Hyprland >/dev/null 2>&1 || warn "Hyprland introuvable — installez hyprland avant de lancer une session."
-if command -v qs >/dev/null 2>&1; then
-    ok "Quickshell détecté ($(command -v qs))"
-else
-    warn "Quickshell (qs) introuvable — installez quickshell-git (AUR)."
+if [[ $EUID -eq 0 ]]; then
+    echo "Ne lancez pas ./install en root : utilisez votre compte utilisateur normal." >&2
+    exit 1
+fi
+
+if (( FULL && ! NO_DEPS )); then
+    install_system_packages
+    install_aur_packages
 fi
 
 if (( ! NO_DEPS )); then
+    build_cpp_plugins
+
     step "Installation de la CLI autonome ano-shell"
-    if command -v pip >/dev/null 2>&1; then
+    if command -v pip >/dev/null 2>&1 || python3 -m pip --version >/dev/null 2>&1; then
         run python3 -m pip install --user --break-system-packages --no-build-isolation --no-deps "$ROOT/cli"
         ok "CLI ano-shell installée (~/.local/bin/ano-shell)"
     else
@@ -94,19 +281,25 @@ if (( ! NO_DEPS )); then
     fi
 fi
 
-step "Installation du shell QML, des outils et des thèmes"
+step "Installation du shell QML, des outils et d'Onde CLI"
 install_item "shell" "$HOME/.config/quickshell/ano-shell"
 ok "Shell QML installé dans ~/.config/quickshell/ano-shell"
 
-mkdir -p "$HOME/.local/bin"
+run mkdir -p "$HOME/.local/bin"
 for tool in "$ROOT/bin/"*; do
     [[ -f "$tool" ]] || continue
     name="$(basename "$tool")"
     run install -Dm755 "$tool" "$HOME/.local/bin/$name"
 done
-ok "Outils installés dans ~/.local/bin/"
+ok "Outils Ano Shell installés dans ~/.local/bin/"
 
-# Configuration Hyprland (autonome ou greffe)
+if [[ -d "$ROOT/extras/onde-cli" ]]; then
+    install_item "extras/onde-cli" "$HOME/.local/share/ano-shell/onde-cli"
+    run ln -sf "$HOME/.local/share/ano-shell/onde-cli/onde-cli" "$HOME/.local/bin/onde-cli"
+    ok "Onde CLI (lecteur musique terminal + paroles synchronisées) installé (~/.local/bin/onde-cli)"
+fi
+
+step "Configuration d'Hyprland, Kitty, Fastfetch, Fish, Starship et Nautilus"
 run mkdir -p "$HOME/.config/ano-shell/hypr"
 install_item "config/hypr/shell.conf" "$HOME/.config/ano-shell/hypr/shell.conf"
 install_item "config/hypr/gestures.conf" "$HOME/.config/ano-shell/hypr/gestures.conf"
@@ -116,14 +309,14 @@ fi
 
 if (( STANDALONE_HYPR )) || [[ ! -f "$HOME/.config/hypr/hyprland.conf" && ! -f "$HOME/.config/hypr/hyprland.lua" ]]; then
     install_item "config/hypr/standalone/hyprland.conf" "$HOME/.config/hypr/hyprland.conf"
-    ok "Configuration Hyprland autonome installée dans ~/.config/hypr/hyprland.conf"
+    ok "Configuration Hyprland autonome installée (~/.config/hypr/hyprland.conf)"
 elif [[ -f "$HOME/.config/hypr/hyprland.conf" ]]; then
     if ! grep -q "ano-shell/hypr/shell.conf" "$HOME/.config/hypr/hyprland.conf"; then
         backup_path "$HOME/.config/hypr/hyprland.conf"
         if (( ! DRY_RUN )); then
             printf '\n# Ano Shell Liquid Glass\nsource = ~/.config/ano-shell/hypr/shell.conf\n' >> "$HOME/.config/hypr/hyprland.conf"
         fi
-        ok "Ligne source ajoutée à ~/.config/hypr/hyprland.conf (sauvegarde dans $BACKUP_DIR)"
+        ok "Ligne source ajoutée à ~/.config/hypr/hyprland.conf"
     else
         ok "source ano-shell/hypr/shell.conf déjà présente dans hyprland.conf"
     fi
@@ -131,7 +324,32 @@ else
     warn "Config Hyprland Lua détectée : lancez ano-shell côte à côte avec 'setsid -f ano-shell shell -d'."
 fi
 
-# Styles outils, sons, kitty
+# Kitty Liquid Glass (modulaire + tab_bar.py + terminal déroulant Super+`)
+if [[ -d "$ROOT/config/kitty" ]]; then
+    install_item "config/kitty" "$HOME/.config/kitty"
+    ok "Kitty Liquid Glass configuré (~/.config/kitty)"
+fi
+
+# Fastfetch Liquid Glass
+if [[ -d "$ROOT/config/fastfetch" ]]; then
+    install_item "config/fastfetch" "$HOME/.config/fastfetch"
+    if (( ! DRY_RUN )) && [[ -f "$HOME/.config/fastfetch/config.jsonc" ]]; then
+        sed -i "s|@HOME@|$HOME|g" "$HOME/.config/fastfetch/config.jsonc"
+    fi
+    ok "Fastfetch configuré (~/.config/fastfetch)"
+fi
+
+# Fish & Starship
+if [[ -f "$ROOT/config/fish/config.fish" ]]; then
+    install_item "config/fish/config.fish" "$HOME/.config/fish/config.fish"
+    ok "Fish configuré (~/.config/fish/config.fish)"
+fi
+if [[ -f "$ROOT/config/starship/starship.toml" ]]; then
+    install_item "config/starship/starship.toml" "$HOME/.config/starship.toml"
+    ok "Starship configuré (~/.config/starship.toml)"
+fi
+
+# Styles outils, sons, qtengine
 install_item "config/tools/tools-base.css" "$HOME/.config/ano-shell/tools-base.css"
 for d in "$ROOT/config/tools/ano-"*; do
     [[ -d "$d" ]] || continue
@@ -141,27 +359,48 @@ done
 if [[ -d "$ROOT/config/sounds" ]]; then
     run mkdir -p "$HOME/.local/share/ano-shell/sounds"
     run cp -an "$ROOT/config/sounds/." "$HOME/.local/share/ano-shell/sounds/"
-    ok "Sons installés dans ~/.local/share/ano-shell/sounds"
+    ok "Sons personnalisés installés"
 fi
 
-if [[ -d "$ROOT/config/kitty" ]]; then
-    run mkdir -p "$HOME/.config/kitty"
-    run cp -a "$ROOT/config/kitty/." "$HOME/.config/kitty/"
-    ok "Thème Kitty Liquid Glass installé"
-fi
+install_qtengine_config
+install_cursor
 
-# Unités systemd user
+# Unités systemd utilisateur
+step "Activation des services système et utilisateur"
 run mkdir -p "$HOME/.config/systemd/user"
 for unit in "$ROOT/config/systemd/user/"*; do
     [[ -f "$unit" ]] || continue
     run install -Dm644 "$unit" "$HOME/.config/systemd/user/$(basename "$unit")"
 done
-run systemctl --user daemon-reload || true
-run systemctl --user enable --now ano-shell-theme.path ano-shell-login-sync.path ano-shell-watch.timer bt-audio-autoswitch.service || true
+run systemctl --user daemon-reload 2>/dev/null || true
+run systemctl --user enable --now \
+    ano-shell-theme.path \
+    ano-shell-login-sync.path \
+    ano-shell-watch.timer \
+    bt-audio-autoswitch.service 2>/dev/null || true
 ok "Unités systemd utilisateur activées"
 
-step "Profil matériel, migration et génération des thèmes"
-CLI_BIN="$(command -v ano-shell || echo "$HOME/.local/bin/ano-shell")"
+# Sur Arch « no desktop », activer les services système essentiels + SDDM Liquid Glass + shell Fish
+if (( FULL )); then
+    for svc in NetworkManager bluetooth power-profiles-daemon sddm; do
+        if systemctl list-unit-files "${svc}.service" >/dev/null 2>&1; then
+            run sudo systemctl enable "$svc" 2>/dev/null || true
+        fi
+    done
+    ok "Services système activés (SDDM, NetworkManager, Bluetooth, Power Profiles)"
+
+    if command -v fish >/dev/null 2>&1 && [[ "$(getent passwd "$USER" | cut -d: -f7)" != "$(command -v fish)" ]]; then
+        if ask "Définir fish comme shell par défaut ?" o; then
+            run chsh -s "$(command -v fish)" || warn "chsh ignoré (lancez : chsh -s /usr/bin/fish)"
+        fi
+    fi
+fi
+
+# Dossiers XDG, profil GPU/batterie, fond d'écran initial et thèmes Liquid Glass (GTK4/3 Nautilus + Portail + Qt Darkly)
+step "Profil matériel, migration et génération des thèmes Liquid Glass"
+command -v xdg-user-dirs-update >/dev/null 2>&1 && run xdg-user-dirs-update || true
+CLI_BIN="$(command -v ano-shell 2>/dev/null || echo "$HOME/.local/bin/ano-shell")"
+
 if (( MIGRATE_CAELESTIA )); then
     run "$CLI_BIN" migrate
 fi
@@ -169,22 +408,41 @@ if [[ ! -f "$HOME/.config/ano-shell/glass.json" ]]; then
     run "$CLI_BIN" glass --auto
     ok "Profil Liquid Glass adapté automatiquement à ton matériel"
 fi
+if [[ ! -e "$HOME/.local/state/ano-shell/wallpaper/current" ]] && [[ -f "$HOME/.config/quickshell/ano-shell/assets/wallpaper.webp" ]]; then
+    run "$CLI_BIN" wallpaper -f "$HOME/.config/quickshell/ano-shell/assets/wallpaper.webp" || true
+fi
 run "$CLI_BIN" theme --no-reload || true
 
-step "Diagnostic rapide"
-if (( ! DRY_RUN )); then
+# Préférence sombre GTK/GNOME pour Nautilus & applis libadwaita
+if command -v gsettings >/dev/null 2>&1; then
+    run gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark' 2>/dev/null || true
+    run gsettings set org.gnome.desktop.interface gtk-theme 'adw-gtk3-dark' 2>/dev/null || true
+fi
+
+# Écran de connexion SDDM Liquid Glass (si SDDM installé)
+if command -v sddm >/dev/null 2>&1 && [[ -x "$ROOT/config/sddm/install-login-screen" ]]; then
+    if (( FULL )) || ask "Installer l'écran de connexion SDDM Liquid Glass ?" o; then
+        run sudo "$ROOT/config/sddm/install-login-screen" || warn "Installation SDDM ignorée"
+    fi
+fi
+
+step "Diagnostic final (ano-shell doctor)"
+if (( ! DRY_RUN )) && [[ -x "$CLI_BIN" ]]; then
     "$CLI_BIN" doctor || true
 fi
 
-cat <<EOF
+if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
+    cat <<EOF
 
-${B}${G}Installation d'Ano Shell terminée.${R}
-
-Si les plugins C++ (/usr/lib/qt6/qml/AnoShell) ne sont pas encore compilés :
-  cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_SYSCONFDIR=/etc
-  cmake --build build
-  sudo cmake --install build
-
-Puis démarrer Ano Shell (écran déverrouillé) :
+${B}${G}Installation d'Ano Shell terminée !${R}
+Pour démarrer Ano Shell maintenant (écran déverrouillé) :
   setsid -f ano-shell shell -d
 EOF
+else
+    cat <<EOF
+
+${B}${G}Installation complète d'Ano Shell terminée !${R}
+Redémarre ton PC pour arriver sur l'écran de connexion Liquid Glass (SDDM) puis sur Hyprland + Ano Shell :
+  sudo reboot
+EOF
+fi

@@ -14,7 +14,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 THEME=liquid-glass
 THEME_DIR=/usr/share/plymouth/themes/$THEME
-BACKUP=/var/backups/caelestia-liquid-glass
+BACKUP=/var/backups/ano-shell
 DRACUT_CONF=/etc/dracut.conf.d/liquid-glass-plymouth.conf
 PARAMS=(quiet splash loglevel=3 rd.udev.log_level=3 vt.global_cursor_default=0)
 

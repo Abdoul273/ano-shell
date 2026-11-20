@@ -3,7 +3,7 @@
 pkgname=ano-shell
 pkgver=1.0.0
 pkgrel=1
-pkgdesc='Standalone Liquid Glass desktop shell for Hyprland (Quickshell + native Qt6 C++ plugins + CLI, zero Caelestia/libcava dependency)'
+pkgdesc='Standalone Liquid Glass desktop shell for Hyprland (Quickshell + native Qt6 C++ plugins + CLI + Onde CLI)'
 arch=('x86_64' 'aarch64')
 url='https://github.com/Abdoul273/ano-shell'
 license=('GPL-3.0-only')
@@ -25,6 +25,14 @@ depends=(
     'python'
     'python-pillow'
     'python-materialyoucolor'
+    'python-rich'
+    'python-mutagen'
+    'python-numpy'
+    'python-scipy'
+    'python-flask'
+    'mpv'
+    'ffmpeg'
+    'yt-dlp'
     'grim'
     'slurp'
     'wl-clipboard'
@@ -36,14 +44,23 @@ depends=(
     'ttf-material-symbols-variable'
     'ttf-rubik-vf'
     'ttf-cascadia-code-nerd'
+    'ttf-jetbrains-mono-nerd'
     'bash'
 )
 optdepends=(
+    'nautilus: Liquid Glass file manager'
+    'sushi: macOS-like Quick Look preview in Nautilus'
+    'kitty: Liquid Glass terminal & quick-access dropdown'
+    'fastfetch: styled system info'
+    'fish: configured interactive shell'
+    'starship: minimal transient prompt'
+    'eza: modern ls with icons'
+    'zoxide: smart cd'
     'darkly-bin: native translucent glass rendering for Qt/KDE apps'
     'qtengine: dynamic Qt6 color theme integration'
-    'hyprsunset: smooth hardware night light without screen shader'
-    'kitty: Liquid Glass terminal & quick-access dropdown'
     'adw-gtk-theme: matching GTK3 theme for file chooser portals'
+    'sddm: Liquid Glass login screen'
+    'hyprsunset: smooth hardware night light without screen shader'
     'fprintd: fingerprint unlock on lock screen'
 )
 makedepends=(
@@ -62,7 +79,6 @@ sha256sums=('SKIP')
 build() {
     cd "${srcdir}/${pkgname}-${pkgver}"
 
-    # 1. Build native Qt6 C++ QML plugins (AnoShell.* + AnoShell.Shapes) & compile shaders
     cmake -B build -G Ninja \
         -DCMAKE_BUILD_TYPE=RelWithDebInfo \
         -DCMAKE_INSTALL_PREFIX=/usr \
@@ -72,28 +88,23 @@ build() {
         -DDISTRIBUTOR="AUR (${pkgname})"
     cmake --build build
 
-    # 2. Build standalone Python CLI wheel
     python -m build --wheel --no-isolation cli
 }
 
 package() {
     cd "${srcdir}/${pkgname}-${pkgver}"
 
-    # 1. Install C++ QML plugins, compiled shaders and shell QML into /usr & /etc/xdg/quickshell/ano-shell
     DESTDIR="${pkgdir}" cmake --install build
-
-    # 2. Install standalone CLI (`ano-shell`)
     python -m installer --destdir="${pkgdir}" cli/dist/*.whl
 
-    # 3. Install desktop helper tools & assets
     install -d "${pkgdir}/usr/share/ano-shell"
-    cp -a bin config install uninstall "${pkgdir}/usr/share/ano-shell/"
+    cp -a bin config extras/onde-cli install uninstall "${pkgdir}/usr/share/ano-shell/"
+    install -d "${pkgdir}/usr/bin"
+    ln -s /usr/share/ano-shell/onde-cli/onde-cli "${pkgdir}/usr/bin/onde-cli"
 
-    # 4. Install pacman hook checking Qt6 ABI alignment after qt6-base upgrades
     install -Dm644 packaging/pacman/ano-shell-qt-check.hook \
         "${pkgdir}/usr/share/libalpm/hooks/ano-shell-qt-check.hook"
 
-    # 5. License & attribution
     install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
     install -Dm644 NOTICE "${pkgdir}/usr/share/licenses/${pkgname}/NOTICE"
 }

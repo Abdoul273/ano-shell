@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-#  Caelestia Liquid Glass — écran de connexion SDDM (à lancer avec sudo)
+#  Ano Shell Liquid Glass — écran de connexion SDDM (à lancer avec sudo)
 #    sudo ./config/sddm/install-login-screen            installe
 #    sudo ./config/sddm/install-login-screen --remove   désinstalle
 # ============================================================================
@@ -61,7 +61,7 @@ fi
 # Activation du thème
 install -d /etc/sddm.conf.d
 cat > "$CONF" <<CONFEOF
-# Caelestia Liquid Glass
+# Ano Shell Liquid Glass
 [Theme]
 Current=liquid-glass
 $cursor_line

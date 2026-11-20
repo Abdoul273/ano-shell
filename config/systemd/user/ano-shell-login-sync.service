@@ -3,4 +3,4 @@ Description=Ano Shell : synchronise le fond d'écran et l'avatar vers SDDM
 
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c '[ -d /var/lib/ano-shell-login ] && [ -e "%h/.local/state/ano-shell/wallpaper/current" ] && cp -L "%h/.local/state/ano-shell/wallpaper/current" /var/lib/ano-shell-login/wallpaper; [ -d /var/lib/ano-shell-login ] && [ -e "%h/.face" ] && cp -L "%h/.face" /var/lib/ano-shell-login/avatar || true'
+ExecStart=/bin/sh -c '[ -d /var/lib/ano-shell-login ] && [ -e "%h/.local/state/ano-shell/wallpaper/current" ] && cp -L "%h/.local/state/ano-shell/wallpaper/current" /var/lib/ano-shell-login/background.jpg; [ -d /var/lib/ano-shell-login ] && [ -e "%h/.face" ] && cp -L "%h/.face" /var/lib/ano-shell-login/avatar.png || true'

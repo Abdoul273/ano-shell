@@ -1,56 +1,43 @@
 # Ano Shell
 
-> **Standalone Liquid Glass desktop shell for Hyprland** — Quickshell + native Qt6 C++ plugins + integrated CLI, with **zero dependency on `caelestia-shell`, `caelestia-cli`, `caelestia-dots`, `libcava`, `sndio` or `aubio`**.
+> **Standalone Liquid Glass desktop environment for Arch Linux + Hyprland** — installs from a fresh Arch Linux (`no desktop`) TTY in **one command**, with zero dependency on `caelestia-shell`, `caelestia-cli`, `libcava`, `sndio` or `aubio`.
 
 [Version française](README.fr.md)
 
-## Why Ano Shell?
+## One-Command Install (Fresh Arch Linux — `no desktop`)
 
-- **100% Standalone**: ships its own Qt6 C++ QML plugins (`AnoShell.*` + `AnoShell.Shapes`), its own Python CLI (`ano-shell`), its own theme engine (GTK4/3 Liquid Glass, GTK3 portal, Darkly Qt/KDE, Kitty, Hyprland) and dual-mode Hyprland configs (standalone turnkey or 1-line drop-in).
-- **Immune to `libcava` / `sndio` breakage**: audio spectrum analysis uses a native PipeWire + `fftw3` engine (and pure C++ beat detection) directly inside `AnoShell.Services`.
-- **Engineered for low-end laptops (2-core / Intel iGPU) & dedicated GPUs alike**:
-  - Eliminated 60 FPS idle shader redraws (`windowMaskTex` event-driven, static crisp clock separator, native C++ `SystemWatch` replacing shell/`fuser` polling).
-  - Lazy-loaded modal panels (`LazyPanel` unloads Control Center, Spotlight, Earbuds 3D, Settings, Clock, Annotate, etc. after 90 s idle).
-  - On-demand voice assistant (`ano-siri` starts on first `Super+Shift+Space`, freeing ~350 MB RAM at boot; optional keep-alive toggle in `island.json`).
-  - Automatic GPU & battery profile detection (`ano-shell glass --auto`).
-- **Built-in Liquid Glass iOS 27 & macOS workflow**: Dynamic Island (music, synced lyrics, calls, transfers, AI agents, timers/alarms, battery, privacy), Control Center, Dock, Mission Control, Spotlight, Lock Screen, bilingual EN/FR interface (`I18n.qml`).
+On a brand-new Arch Linux installation (from `archinstall` with **Profile: Minimal / No desktop**), log into the TTY as your normal user and run:
 
-## Quick Install (Arch Linux / EndeavourOS)
-
-### Option 1 — Single AUR-style package (`makepkg`)
-
-```fish
-git clone https://github.com/Abdoul273/ano-shell.git
-cd ano-shell/packaging/aur
-# For local build from working tree, or after tagging v1.0.0:
-makepkg -si
+```bash
+curl -fsSL https://raw.githubusercontent.com/Abdoul273/ano-shell/main/bootstrap.sh | bash
 ```
 
-### Option 2 — Build & 1-click user setup
+Then reboot (`sudo reboot`). Everything is configured automatically:
+- **Desktop stack**: Hyprland, Wayland portals, PipeWire + WirePlumber, Bluetooth, NetworkManager, Power Profiles, SDDM (**Liquid Glass login screen** + macOS cursor).
+- **Native Qt6 C++ plugins (`AnoShell.*` + `AnoShell.Shapes`)**: built automatically with native PipeWire + `fftw3` audio spectrum (no `libcava`/`sndio` breakage) and C++ `SystemWatch` (no shell/`fuser` polling).
+- **Full Liquid Glass theme everywhere**: Dynamic Island iOS 27, Control Center, Mission Control, Spotlight, Lock Screen, **Nautilus + Sushi** (GTK4/3 + File Chooser Portal Liquid Glass), **Qt/KDE Darkly**, **Kitty** (modular + `tab_bar.py` + `Super+\`` dropdown), **Fastfetch**, **Fish + Starship** (`eza`, `zoxide`).
+- **Music & Tools included**: **`onde-cli`** (Rich terminal music player with word-synced lyrics connected to the Dynamic Island), clipboard, emoji, display projection, clock/timers, voice assistant (`ano-siri`, on-demand), dictation, writing tools, web watchers, AI agents monitor.
+- **Tuned for low-end laptops & dedicated GPUs alike**: automatic hardware profile (`ano-shell glass --auto`), zero 60 FPS idle shader redraws, lazy-loaded modal panels (`LazyPanel`), on-demand daemons.
+
+---
+
+## Install on an Existing Hyprland Setup
 
 ```fish
 git clone https://github.com/Abdoul273/ano-shell.git
 cd ano-shell
-
-# 1. Build & install native Qt6 C++ plugins (`AnoShell.*` + `AnoShell.Shapes`)
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_SYSCONFDIR=/etc
-cmake --build build
-sudo cmake --install build
-
-# 2. Install CLI, QML shell, tools, Hyprland integration & optimal GPU profile
-./install            # add --migrate-caelestia to import existing Caelestia prefs
-                     # add --standalone-hypr on a fresh Arch + Hyprland install
-
-# 3. Verify & launch
-ano-shell doctor
-setsid -f ano-shell shell -d
+./install                      # keeps your hyprland.conf (adds 1 `source` line + timestamped backup)
+# or if migrating from Caelestia Liquid Glass:
+./install --migrate-caelestia
 ```
+
+---
 
 ## CLI Overview (`ano-shell`)
 
 | Command | Description |
 | :--- | :--- |
-| `ano-shell shell -d` / `-k` | Start or safely stop the shell (refuses to kill while screen is locked) |
+| `ano-shell shell -d` / `-k` | Start or safely stop the shell (blocks kill while screen is locked) |
 | `ano-shell wallpaper -f <img>` | Set wallpaper and generate Material You dynamic palette |
 | `ano-shell scheme set -m dark\|light` | Switch theme or color mode |
 | `ano-shell glass --auto` | Detect GPU/battery and apply the best Liquid Glass profile |
@@ -58,6 +45,7 @@ setsid -f ano-shell shell -d
 | `ano-shell screenshot` / `record` | Fullscreen/region screenshot and `gpu-screen-recorder` capture |
 | `ano-shell doctor` | Check Quickshell Qt6 ABI alignment, plugin `ldd`, JSON configs and Hyprland |
 | `ano-shell migrate` | Non-destructively copy settings from `~/.config/caelestia` |
+| `onde-cli` | Launch interactive terminal music player synced with the Dynamic Island |
 
 ## License & Attribution
 

@@ -134,3 +134,34 @@ def test_gtk_css_parses_with_gtk_if_available():
         provider.connect("parsing-error", lambda _p, _sec, err, errs=errors: errs.append(err.message))
         provider.load_from_string(rendered)
         assert not errors, f"Erreurs CSS GTK4 dans {name}: {errors}"
+
+
+def test_bare_arch_bundle_complete_and_clean():
+    """Vérifie la présence d'onde-cli, fastfetch, fish, starship, kitty, bootstrap.sh et 0 chemin personnel."""
+    required = [
+        ROOT / "bootstrap.sh",
+        ROOT / "extras/onde-cli/onde-cli",
+        ROOT / "extras/onde-cli/onde/cli.py",
+        ROOT / "config/fastfetch/config.jsonc",
+        ROOT / "config/fastfetch/logo.png",
+        ROOT / "config/fish/config.fish",
+        ROOT / "config/starship/starship.toml",
+        ROOT / "config/kitty/kitty.conf",
+        ROOT / "config/kitty/liquid-glass.conf",
+        ROOT / "config/kitty/tab_bar.py",
+        ROOT / "config/hypr/standalone/hyprland.conf",
+        ROOT / "config/sddm/install-login-screen",
+    ]
+    for path in required:
+        assert path.is_file(), f"Fichier attendu absent : {path}"
+
+    for cfg in (
+        ROOT / "bootstrap.sh",
+        ROOT / "install",
+        ROOT / "config/fastfetch/config.jsonc",
+        ROOT / "config/fish/config.fish",
+        ROOT / "config/kitty/kitty.conf",
+        ROOT / "config/hypr/shell.conf",
+        ROOT / "config/hypr/standalone/hyprland.conf",
+    ):
+        assert "/home/anonymous" not in cfg.read_text(encoding="utf-8"), f"Chemin personnel dans {cfg}"
