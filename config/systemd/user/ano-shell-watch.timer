@@ -1,0 +1,10 @@
+[Unit]
+Description=Ano Shell : vérifie les tâches de surveillance web toutes les 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

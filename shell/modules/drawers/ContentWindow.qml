@@ -1,0 +1,979 @@
+pragma ComponentBehavior: Bound
+
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Effects
+import QtMultimedia
+import QtQuick.Shapes
+import Quickshell
+import Quickshell.Hyprland
+import Quickshell.Services.UPower
+import Quickshell.Wayland
+import AnoShell.Blobs
+import AnoShell.Config
+import qs.components
+import qs.components.containers
+import qs.components.effects
+import qs.services
+import qs.modules.bar
+
+StyledWindow {
+    id: root
+
+    readonly property alias bar: bar
+    readonly property alias interactionWrapper: interactions
+
+    readonly property ScreenState screenState: ShellState.forScreen(screen)
+
+    readonly property HyprlandMonitor monitor: Hypr.monitorFor(screen)
+    readonly property bool hasSpecialWorkspace: (monitor?.lastIpcObject.specialWorkspace?.name.length ?? 0) > 0
+    readonly property bool hasFullscreenOnNormalWs: monitor?.activeWorkspace?.toplevels.values.some(t => t.lastIpcObject.fullscreen > 1) ?? false
+    readonly property bool hasFullscreen: {
+        if (hasSpecialWorkspace) {
+            const specialName = monitor?.lastIpcObject.specialWorkspace?.name;
+            if (!specialName)
+                return false;
+            const specialWs = Hypr.workspaces.values.find(ws => ws.name === specialName);
+            return specialWs?.toplevels.values.some(t => t.lastIpcObject.fullscreen > 1) ?? false;
+        }
+        return hasFullscreenOnNormalWs;
+    }
+
+    property real fsTransitionProg: hasFullscreen ? 1 : 0
+    readonly property real sdfBorderOffset: 2 * fsTransitionProg // SDFs joins are not exact, so offset by 2px to ensure nothing shows
+    readonly property real borderThickness: contentItem.Config.border.thickness * (1 - fsTransitionProg)
+    readonly property real borderRounding: contentItem.Config.border.rounding * (1 - fsTransitionProg)
+    readonly property real shadowOpacity: 0.7 * (1 - fsTransitionProg)
+    readonly property real borderLayoutThickness: hasFullscreen ? 0 : contentItem.Config.border.thickness
+
+    property color surfaceColour: Colours.tPalette.m3surface
+
+    readonly property int dragMaskPadding: {
+        if (focusGrab.active || panels.popouts.isDetached)
+            return 0;
+
+        if (monitor?.lastIpcObject.specialWorkspace?.name || monitor?.activeWorkspace?.lastIpcObject.windows > 0)
+            return 0;
+
+        const thresholds = [];
+        for (const panel of ["dashboard", "launcher", "session", "sidebar"])
+            if (contentItem.Config[panel].enabled)
+                thresholds.push(contentItem.Config[panel].dragThreshold);
+        return Math.max(...thresholds);
+    }
+
+    onHasFullscreenChanged: {
+        screenState.launcher = false;
+        screenState.session = false;
+        screenState.dashboard = false;
+        panels.popouts.close();
+    }
+
+    name: "drawers"
+    WlrLayershell.exclusionMode: ExclusionMode.Ignore
+    WlrLayershell.layer: (fsTransitionProg > 0 && contentItem.Config.general.showOverFullscreen) || (hasSpecialWorkspace && hasFullscreenOnNormalWs) ? WlrLayer.Overlay : WlrLayer.Top
+    WlrLayershell.keyboardFocus: screenState.launcher || screenState.session || screenState.notesActive || screenState.controlCenter || screenState.spotlight || screenState.calculator || screenState.dictation || screenState.writing || screenState.translate || screenState.siri || screenState.display || screenState.clipboard || screenState.emoji || screenState.keyhelp || screenState.clock || screenState.settings || screenState.annotate || screenState.earbuds ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
+
+    mask: hasFullscreen ? emptyRegion : regions
+
+    anchors.top: true
+    anchors.bottom: true
+    anchors.left: true
+    anchors.right: true
+
+    Behavior on fsTransitionProg {
+        Anim {}
+    }
+
+    Behavior on surfaceColour {
+        CAnim {}
+    }
+
+    Region {
+        id: emptyRegion
+
+        x: panels.notifications.x + bar.implicitWidth
+        y: panels.notifications.y + root.borderThickness
+        width: panels.notifications.width
+        height: panels.notifications.height
+
+        Region {
+            x: root.width - width
+            y: panels.osdWrapper.y + root.borderThickness
+            width: panels.osdWrapper.width * (1 - panels.osd.offsetScale) + root.borderThickness
+            height: panels.osd.height
+        }
+    }
+
+    Regions {
+        id: regions
+
+        bar: bar
+        panels: panels
+        win: root
+    }
+
+    HyprlandFocusGrab {
+        id: focusGrab
+
+        active: {
+            const s = root.screenState;
+            const conf = root.contentItem.Config;
+            if ((s.launcher && conf.launcher.enabled) || (s.session && conf.session.enabled) || (s.sidebar && conf.sidebar.enabled) || s.controlCenter || s.spotlight || s.calculator || s.dictation || s.writing || s.translate || s.display || s.clipboard || s.emoji || s.keyhelp || s.clock || s.settings || s.annotate || s.earbuds)
+                return true;
+            if (!conf.dashboard.showOnHover && s.dashboard && conf.dashboard.enabled)
+                return true;
+            if (panels.popouts.currentName.startsWith("traymenu") && (panels.popouts.current as StackView)?.depth > 1)
+                return true;
+            return false;
+        }
+        windows: [root]
+        onCleared: {
+            root.screenState.launcher = false;
+            root.screenState.session = false;
+            root.screenState.sidebar = false;
+            root.screenState.dashboard = false;
+            root.screenState.controlCenter = false;
+            root.screenState.spotlight = false;
+            root.screenState.calculator = false;
+            root.screenState.dictation = false;
+            root.screenState.writing = false;
+            root.screenState.translate = false;
+            // Siri reste ouvert quand on passe sur une fenêtre : il se ferme par Échap
+            root.screenState.display = false;
+            root.screenState.annotate = false;
+            root.screenState.earbuds = false;
+            root.screenState.settings = false;
+            root.screenState.clock = false;
+            root.screenState.keyhelp = false;
+            root.screenState.emoji = false;
+            root.screenState.clipboard = false;
+            panels.popouts.hasCurrent = false;
+            bar.closeTray();
+        }
+    }
+
+    StyledRect {
+        anchors.fill: parent
+        opacity: (root.screenState.session && Config.session.enabled) || panels.popouts.detachedMode !== "" ? 0.5 : 0
+        color: Colours.palette.m3scrim
+
+        Behavior on opacity {
+            Anim {
+                type: Anim.SlowEffects
+            }
+        }
+    }
+
+    Item {
+        anchors.fill: parent
+        opacity: Glass.panels ? 1 : root.surfaceColour.a
+        layer.enabled: true
+        layer.effect: Glass.panels ? glassBlobEffect : shadowEffect
+
+        BlobGroup {
+            id: blobGroup
+
+            color: Glass.panels ? Qt.alpha(root.surfaceColour, 1) : root.surfaceColour
+            smoothing: root.contentItem.Config.border.smoothing
+        }
+
+        BlobInvertedRect {
+            anchors.fill: parent
+            anchors.margins: -50 // Make border thicker to smooth out bulge from closed drawers
+            group: blobGroup
+            radius: root.borderRounding
+            borderLeft: bar.implicitWidth - anchors.margins - root.sdfBorderOffset
+            borderRight: root.borderThickness - anchors.margins - root.sdfBorderOffset
+            // Avec l'île, le bord haut disparaît : elle sort directement du haut de l'écran
+            borderTop: (Island.hideTopBorder ? 0 : root.borderThickness) - anchors.margins - root.sdfBorderOffset
+            borderBottom: root.borderThickness - anchors.margins - root.sdfBorderOffset
+        }
+
+        PanelBg {
+            id: dashBg
+
+
+            panel: panels.dashboard
+            deformAmount: 0.1
+            visible: panels.dashboard.visible
+            // Le verre naît de l'île (même taille, même place) et grandit jusqu'au panneau.
+            // Le haut dépasse de l'écran : seuls les coins du bas sont arrondis.
+            radius: Math.min(panels.dashboard.fromH / 2, 32) + (Tokens.rounding.extraLarge - Math.min(panels.dashboard.fromH / 2, 32)) * panels.dashboard.morph
+            x: panel.x + bar.implicitWidth + (panel.width - panels.dashboard.curW) / 2
+            implicitWidth: panels.dashboard.curW
+            // Fermé : rangé bien au-dessus de l'écran (sinon il se fond dans l'île au repos et change ses bords)
+            y: panels.dashboard.visible ? -radius : -radius - 200
+            implicitHeight: panels.dashboard.visible ? Math.max(0, panel.y + root.borderThickness + panels.dashboard.visBottom) + radius : radius
+        }
+
+        // Épaules du dashboard (Notes, Tâches…) : il sort du bord de l'écran comme l'île
+        Shoulders {
+            lx: dashBg.x
+            rx: dashBg.x + dashBg.width
+            // Même épaules que l'île au départ, puis celles du panneau
+            s: panels.dashboard.visible ? Math.min(18, panels.dashboard.fromH * 0.55) + (26 - Math.min(18, panels.dashboard.fromH * 0.55)) * panels.dashboard.morph : 0
+        }
+
+        // L'île fait partie de la forme fluide : même verre, même fusion que les panneaux.
+        // Le rectangle dépasse au-dessus de l'écran pour que seuls les coins du bas soient arrondis.
+        PanelBg {
+            id: islandBg
+
+            panel: panels.island
+            deformAmount: 0.12
+            radius: panels.island.radius
+            // Repliée : le rectangle remonte bien au-dessus de l'écran pour que la fusion ne laisse aucune bosse
+            y: -radius - Math.max(0, 30 - panels.island.h * 3)
+            implicitHeight: panels.island.h + radius
+        }
+
+        // Épaules de l'île : deux arrondis concaves qui la font sortir du bord de l'écran
+        Shoulders {
+            lx: islandBg.x
+            rx: islandBg.x + islandBg.width
+            s: Math.min(18, panels.island.h * 0.55)
+        }
+
+        // Centre de contrôle : même verre, collé au haut de l'écran
+        PanelBg {
+            id: ccBg
+
+            readonly property var cc: panels.controlCenter
+            readonly property real fromR: Math.min((cc.fromBottom + root.borderThickness) / 2, 32)
+
+            panel: panels.controlCenter
+            deformAmount: 0.08
+            // Le verre part de l'île (même place, même taille) et file vers le coin haut droit
+            radius: fromR + (30 - fromR) * cc.morph
+            x: cc.curX + bar.implicitWidth
+            implicitWidth: cc.curW
+            // Fermé : rangé au-dessus de l'écran (sinon il se fondrait dans l'île au repos)
+            y: cc.visible ? -radius : -radius - 200
+            implicitHeight: cc.visible ? Math.max(0, cc.curBottom + root.borderThickness) + radius : radius
+            visible: cc.visible
+        }
+
+        Shoulders {
+            lx: ccBg.x
+            rx: ccBg.x + ccBg.width
+            s: panels.controlCenter.visible ? Math.min(18, (panels.controlCenter.fromBottom + root.borderThickness) * 0.55) + (22 - Math.min(18, (panels.controlCenter.fromBottom + root.borderThickness) * 0.55)) * panels.controlCenter.morph : 0
+        }
+
+        // Spotlight : même verre que l'île ; il s'en détache comme une goutte
+        PanelBg {
+            id: spotBg
+
+            readonly property var sp: panels.spotlight
+
+            panel: panels.spotlight
+            deformAmount: 0.1
+            visible: sp.visible
+            radius: sp.curR
+            x: sp.curX + bar.implicitWidth
+            implicitWidth: sp.curW
+            y: sp.visible ? sp.curTop + root.borderThickness : -400
+            implicitHeight: sp.visible ? Math.max(0, sp.curBottom - sp.curTop) : 0
+        }
+
+        // Calculatrice : même goutte que Spotlight
+        PanelBg {
+            id: calcBg
+
+            readonly property var cp: panels.calculator
+
+            panel: panels.calculator
+            deformAmount: 0.1
+            visible: cp.visible
+            radius: cp.curR
+            x: cp.curX + bar.implicitWidth
+            implicitWidth: cp.curW
+            y: cp.visible ? cp.curTop + root.borderThickness : -400
+            implicitHeight: cp.visible ? Math.max(0, cp.curBottom - cp.curTop) : 0
+        }
+
+        // Assistant vocal : même goutte
+        PanelBg {
+            id: siriBg
+
+            readonly property var dp: panels.siri
+
+            panel: panels.siri
+            deformAmount: 0.1
+            visible: dp.visible
+            radius: dp.curR
+            x: dp.curX + bar.implicitWidth
+            implicitWidth: dp.curW
+            y: dp.visible ? dp.curTop + root.borderThickness : -400
+            implicitHeight: dp.visible ? Math.max(0, dp.curBottom - dp.curTop) : 0
+        }
+
+        // Outils d'écriture : même goutte
+        PanelBg {
+            id: writingBg
+
+            readonly property var dp: panels.writing
+
+            panel: panels.writing
+            deformAmount: 0.1
+            visible: dp.visible
+            radius: dp.curR
+            x: dp.curX + bar.implicitWidth
+            implicitWidth: dp.curW
+            y: dp.visible ? dp.curTop + root.borderThickness : -400
+            implicitHeight: dp.visible ? Math.max(0, dp.curBottom - dp.curTop) : 0
+        }
+
+        // Traduction : même goutte
+        PanelBg {
+            id: translateBg
+
+            readonly property var dp: panels.translate
+
+            panel: panels.translate
+            deformAmount: 0.1
+            visible: dp.visible
+            radius: dp.curR
+            x: dp.curX + bar.implicitWidth
+            implicitWidth: dp.curW
+            y: dp.visible ? dp.curTop + root.borderThickness : -400
+            implicitHeight: dp.visible ? Math.max(0, dp.curBottom - dp.curTop) : 0
+        }
+
+        // Dictée : même goutte
+        PanelBg {
+            id: dictationBg
+
+            readonly property var dp: panels.dictation
+
+            panel: panels.dictation
+            deformAmount: 0.1
+            visible: dp.visible
+            radius: dp.curR
+            x: dp.curX + bar.implicitWidth
+            implicitWidth: dp.curW
+            y: dp.visible ? dp.curTop + root.borderThickness : -400
+            implicitHeight: dp.visible ? Math.max(0, dp.curBottom - dp.curTop) : 0
+        }
+
+        // Projection : même goutte
+        PanelBg {
+            id: displayBg
+
+            readonly property var dp: panels.display
+
+            panel: panels.display
+            deformAmount: 0.1
+            visible: dp.visible
+            radius: dp.curR
+            x: dp.curX + bar.implicitWidth
+            implicitWidth: dp.curW
+            y: dp.visible ? dp.curTop + root.borderThickness : -400
+            implicitHeight: dp.visible ? Math.max(0, dp.curBottom - dp.curTop) : 0
+        }
+
+        // Presse-papiers (Super + V) : même goutte de verre
+        PanelBg {
+            id: clipboardBg
+
+            readonly property var gp: panels.clipboard
+
+            panel: panels.clipboard
+            deformAmount: 0.1
+            visible: gp.visible
+            radius: gp.curR
+            x: gp.curX + bar.implicitWidth
+            implicitWidth: gp.curW
+            y: gp.visible ? gp.curTop + root.borderThickness : -400
+            implicitHeight: gp.visible ? Math.max(0, gp.curBottom - gp.curTop) : 0
+        }
+
+        // Emojis (Super + .) : même goutte de verre
+        PanelBg {
+            id: emojiBg
+
+            readonly property var gp: panels.emoji
+
+            panel: panels.emoji
+            deformAmount: 0.1
+            visible: gp.visible
+            radius: gp.curR
+            x: gp.curX + bar.implicitWidth
+            implicitWidth: gp.curW
+            y: gp.visible ? gp.curTop + root.borderThickness : -400
+            implicitHeight: gp.visible ? Math.max(0, gp.curBottom - gp.curTop) : 0
+        }
+
+        // Raccourcis (Super + H) : recherche façon Spotlight
+        PanelBg {
+            id: keyhelpBg
+
+            readonly property var gp: panels.keyhelp
+
+            panel: panels.keyhelp
+            deformAmount: 0.1
+            visible: gp.visible
+            radius: gp.curR
+            x: gp.curX + bar.implicitWidth
+            implicitWidth: gp.curW
+            y: gp.visible ? gp.curTop + root.borderThickness : -400
+            implicitHeight: gp.visible ? Math.max(0, gp.curBottom - gp.curTop) : 0
+        }
+
+        // Horloge (Super + Maj + O) : même goutte de verre
+        PanelBg {
+            id: clockBg
+
+            readonly property var gp: panels.clock
+
+            panel: panels.clock
+            deformAmount: 0.1
+            visible: gp.visible
+            radius: gp.curR
+            x: gp.curX + bar.implicitWidth
+            implicitWidth: gp.curW
+            y: gp.visible ? gp.curTop + root.borderThickness : -400
+            implicitHeight: gp.visible ? Math.max(0, gp.curBottom - gp.curTop) : 0
+        }
+
+        // Paramètres (Super + I) : Nexus dans la goutte de verre
+        PanelBg {
+            id: settingsBg
+
+            readonly property var gp: panels.settings
+
+            panel: panels.settings
+            deformAmount: 0.1
+            visible: gp.visible
+            radius: gp.curR
+            x: gp.curX + bar.implicitWidth
+            implicitWidth: gp.curW
+            y: gp.visible ? gp.curTop + root.borderThickness : -400
+            implicitHeight: gp.visible ? Math.max(0, gp.curBottom - gp.curTop) : 0
+        }
+
+        // Annoter une capture : même goutte de verre
+        PanelBg {
+            id: annotateBg
+
+            readonly property var gp: panels.annotate
+
+            panel: panels.annotate
+            deformAmount: 0.1
+            visible: gp.visible
+            radius: gp.curR
+            x: gp.curX + bar.implicitWidth
+            implicitWidth: gp.curW
+            y: gp.visible ? gp.curTop + root.borderThickness : -400
+            implicitHeight: gp.visible ? Math.max(0, gp.curBottom - gp.curTop) : 0
+        }
+
+        // Écouteurs 3D (Super + Maj + B) : même goutte de verre façon AirPodsDesktop
+        PanelBg {
+            id: earbudsBg
+
+            readonly property var gp: panels.earbuds
+
+            panel: panels.earbuds
+            deformAmount: 0.1
+            visible: gp.visible
+            radius: gp.curR
+            x: gp.curX + bar.implicitWidth
+            implicitWidth: gp.curW
+            y: gp.visible ? gp.curTop + root.borderThickness : -400
+            implicitHeight: gp.visible ? Math.max(0, gp.curBottom - gp.curTop) : 0
+        }
+
+        // Dock : même verre ; replié, le rectangle descend bien sous l'écran (aucune bosse)
+        PanelBg {
+            id: dockBg
+
+            panel: panels.dock
+            deformAmount: 0.06
+            radius: 26
+            y: panel.y + root.borderThickness + panel.height - panels.dock.blobHeight + 30 * (1 - panels.dock.reveal)
+            implicitHeight: panels.dock.blobHeight + radius
+            // Replié : largeur nulle, sinon il creuse le bord bas du cadre
+            implicitWidth: panels.dock.reveal > 0.001 ? panel.width : 0
+            x: panel.x + bar.implicitWidth + (panels.dock.reveal > 0.001 ? 0 : panel.width / 2)
+        }
+
+        PanelBg {
+            id: launcherBg
+
+
+            panel: panels.launcher
+            deformAmount: 0.1
+        }
+
+        PanelBg {
+            id: sessionBg
+
+
+            panel: panels.sessionWrapper
+            deformAmount: 0.2
+            x: panels.sessionWrapper.x + panels.session.x + bar.implicitWidth
+            implicitWidth: panels.session.width
+        }
+
+        PanelBg {
+            id: sidebarBg
+
+            panel: panels.sidebar
+            deformAmount: 0.03
+            implicitHeight: panel.height * (1 / rawDeformMatrix.m22) + 2
+            exclude: panels.sidebar.offsetScale > 0.08 ? [] : [utilsBg]
+            bottomLeftRadius: Math.max(0, Math.min(1, panels.sidebar.offsetScale / 0.3)) * radius
+        }
+
+        PanelBg {
+            id: osdBg
+
+
+            panel: panels.osdWrapper
+            deformAmount: 0.25
+            x: panels.osdWrapper.x + panels.osd.x + bar.implicitWidth
+            implicitWidth: panels.osd.width
+        }
+
+        // En mode verre, le panneau des notifications fusionne avec le cadre ;
+        // sinon chaque carte flotte seule
+        PanelBg {
+            id: notifsBg
+
+            panel: panels.notifications
+            group: Glass.panels ? blobGroup : null
+        }
+
+        PanelBg {
+            id: utilsBg
+
+            panel: panels.utilities
+            deformAmount: panels.sidebar.visible ? 0.1 : 0.15
+            exclude: panels.sidebar.offsetScale > 0.08 ? [] : [sidebarBg]
+            topLeftRadius: Math.max(0, Math.min(1, panels.sidebar.offsetScale / 0.3)) * radius
+        }
+
+        PanelBg {
+            id: popoutBg
+
+
+            // Extra width to prevent vertical movement deformation partially detaching panel from bar
+            property real extraWidth: panels.popouts.isDetached ? 0 : 0.2
+
+            panel: panels.popoutsWrapper
+            deformAmount: panels.popouts.isDetached ? 0.05 : panels.popouts.hasCurrent ? 0.15 : 0.1
+            x: panels.popoutsWrapper.x + panels.popouts.x + bar.implicitWidth - panels.popouts.width * extraWidth
+            implicitWidth: panels.popouts.width * (1 + extraWidth)
+
+            Behavior on extraWidth {
+                Anim {}
+            }
+        }
+    }
+
+    Component {
+        id: shadowEffect
+
+        MultiEffect {
+            shadowEnabled: true
+            blurMax: 15
+            shadowColor: Qt.alpha(Colours.palette.m3shadow, Math.max(0, root.shadowOpacity))
+        }
+    }
+
+    // Fond d'écran lu par le verre « iOS » pour la réfraction (demi-résolution : léger en mémoire).
+    // Image fixe + fond animé (sur secteur seulement, comme le fond lui-même) par-dessus.
+    Item {
+        id: wallpaperSrc
+
+        anchors.fill: parent
+
+        Image {
+            id: wallpaperImg
+
+            anchors.fill: parent
+            asynchronous: true
+            cache: false
+            fillMode: Image.PreserveAspectCrop
+            sourceSize: Qt.size(Math.round(width / 2), Math.round(height / 2))
+            source: Glass.ios && Wallpapers.current ? `file://${Wallpapers.current}` : ""
+        }
+
+        Loader {
+            id: wallpaperVid
+
+            readonly property bool ready: status === Loader.Ready && item.playbackState === MediaPlayer.PlayingState && item.hasVideo
+
+            anchors.fill: parent
+            active: Glass.clearVideo && Wallpapers.isVideo(Wallpapers.animated) && !UPower.onBattery && !Wallpapers.showPreview
+
+            sourceComponent: Video {
+                source: "file://" + Wallpapers.animated
+                fillMode: VideoOutput.PreserveAspectCrop
+                loops: MediaPlayer.Infinite
+                muted: true
+                autoPlay: true
+            }
+        }
+    }
+
+    ShaderEffectSource {
+        id: wallpaperTex
+
+        anchors.fill: parent
+        sourceItem: wallpaperSrc
+        hideSource: true
+        live: false
+        visible: false
+        textureSize: Qt.size(Math.round(width / 2), Math.round(height / 2))
+
+        Connections {
+            target: wallpaperImg
+
+            function onStatusChanged(): void {
+                if (wallpaperImg.status === Image.Ready)
+                    wallpaperTex.scheduleUpdate();
+            }
+        }
+
+        // Fond animé vu à travers le verre : 12 images/s suffisent (flou + lentille) et
+        // coûtent bien moins que de recalculer le verre à chaque image de la vidéo
+        Timer {
+            running: wallpaperVid.ready
+            repeat: true
+            interval: 83
+            onTriggered: wallpaperTex.scheduleUpdate()
+        }
+
+        // Retour à l'image fixe (débranché) : la texture ne doit pas garder la dernière image vidéo
+        Connections {
+            target: wallpaperVid
+
+            function onReadyChanged(): void {
+                wallpaperTex.scheduleUpdate();
+            }
+        }
+    }
+
+    // Emplacement des fenêtres de cet écran (bureau actif + bureau spécial ouvert) :
+    // le verre « iOS » ne réfracte le fond d'écran que là où aucune fenêtre n'est dessous.
+    Item {
+        id: windowMask
+
+        anchors.fill: parent
+        visible: false
+
+        Repeater {
+            model: {
+                if (!Glass.ios || !root.monitor)
+                    return [];
+                const wins = [...(root.monitor.activeWorkspace?.toplevels.values ?? [])];
+                const special = root.monitor.lastIpcObject.specialWorkspace?.name;
+                if (special)
+                    wins.push(...(Hypr.workspaces.values.find(ws => ws.name === special)?.toplevels.values ?? []));
+                return wins;
+            }
+
+            Rectangle {
+                required property var modelData
+                readonly property var ipc: modelData.lastIpcObject
+
+                x: (ipc.at?.[0] ?? 0) - root.monitor.x
+                y: (ipc.at?.[1] ?? 0) - root.monitor.y
+                width: ipc.size?.[0] ?? 0
+                height: ipc.size?.[1] ?? 0
+                color: "white"
+            }
+        }
+    }
+
+    ShaderEffectSource {
+        id: windowMaskTex
+
+        anchors.fill: parent
+        sourceItem: windowMask
+        hideSource: true
+        live: false
+        visible: false
+        textureSize: Qt.size(Math.round(width / 4), Math.round(height / 4))
+
+        Component.onCompleted: maskRefresh.restart()
+    }
+
+    // Rafraîchit le masque des fenêtres uniquement sur changement Hyprland (0 FPS au repos)
+    Timer {
+        id: maskRefresh
+
+        interval: 80
+        onTriggered: {
+            if (Glass.ios)
+                windowMaskTex.scheduleUpdate();
+        }
+    }
+
+    Connections {
+        target: Hypr
+
+        function onActiveWorkspaceChanged(): void {
+            maskRefresh.restart();
+        }
+    }
+
+    Connections {
+        target: Hypr.toplevels
+
+        function onValuesChanged(): void {
+            maskRefresh.restart();
+        }
+    }
+
+    Connections {
+        target: root.monitor
+
+        function onActiveWorkspaceChanged(): void {
+            maskRefresh.restart();
+        }
+    }
+
+    // Cadre, barre, sidebar et utilitaires en liquid glass
+    Component {
+        id: glassBlobEffect
+
+        ShaderEffect {
+            // Uniformes du style iOS (ignorés par le shader classique)
+            readonly property vector4d zone: Qt.vector4d(bar.implicitWidth, root.borderThickness, root.borderThickness, root.borderThickness)
+            readonly property real refraction: wallpaperImg.status === Image.Ready ? 1 : 0
+            readonly property real thickAlpha: Glass.thickAlpha
+            readonly property real unknownBg: 0
+            readonly property real clearGlass: Glass.clear ? 1 : 0
+            readonly property real clearVeil: Glass.strength(Colours.light ? 0.38 : 0.34)
+            readonly property var wallpaper: wallpaperTex
+            readonly property var windows: windowMaskTex
+
+            readonly property vector2d texel: Qt.vector2d(1 / Math.max(1, width), 1 / Math.max(1, height))
+            readonly property vector3d tint: Qt.vector3d(root.surfaceColour.r, root.surfaceColour.g, root.surfaceColour.b)
+            readonly property real tintAlpha: Glass.strength(Glass.ios ? (Colours.light ? 0.3 : 0.24) : Colours.light ? 0.56 : 0.46)
+            readonly property real light: Colours.light ? 1.2 : 1
+            readonly property real shadowStrength: 0.17 * Math.max(0, root.shadowOpacity) / 0.7
+            readonly property point mouse: interactions.containsMouse
+                ? Qt.point(interactions.mouseX / Math.max(1, width), interactions.mouseY / Math.max(1, height))
+                : Qt.point(0.5, 0.0)
+            property real hover: interactions.containsMouse ? 1 : 0
+
+            Behavior on hover {
+                NumberAnimation {
+                    duration: 350
+                    easing.type: Easing.OutCubic
+                }
+            }
+
+            fragmentShader: Qt.resolvedUrl(Quickshell.shellPath(Glass.ios ? "assets/shaders/liquidios.frag.qsb" : "assets/shaders/glassblob.frag.qsb"))
+        }
+    }
+
+    Interactions {
+        id: interactions
+
+        screen: root.screen
+        popouts: panels.popouts
+        screenState: root.screenState
+        panels: panels
+        bar: bar
+        borderThickness: root.borderLayoutThickness
+        fullscreen: root.hasFullscreen
+
+        Panels {
+            id: panels
+
+            screen: root.screen
+            screenState: root.screenState
+            bar: bar
+            borderThickness: root.borderThickness
+
+            utilities.horizontalStretch: (sidebarBg.rawDeformMatrix.m11 - 1) / 2 + 1
+            utilities.deformMatrix: utilsBg.rawDeformMatrix
+
+            dashboard.transform: Matrix4x4 {
+                matrix: dashBg.deformMatrix
+            }
+            island.fullscreen: root.hasFullscreen
+            dock.fullscreen: root.hasFullscreen
+            controlCenter.transform: Matrix4x4 {
+                matrix: ccBg.deformMatrix
+            }
+            clipboard.transform: Matrix4x4 {
+                matrix: clipboardBg.deformMatrix
+            }
+            emoji.transform: Matrix4x4 {
+                matrix: emojiBg.deformMatrix
+            }
+            keyhelp.transform: Matrix4x4 {
+                matrix: keyhelpBg.deformMatrix
+            }
+            clock.transform: Matrix4x4 {
+                matrix: clockBg.deformMatrix
+            }
+            settings.transform: Matrix4x4 {
+                matrix: settingsBg.deformMatrix
+            }
+            annotate.transform: Matrix4x4 {
+                matrix: annotateBg.deformMatrix
+            }
+            earbuds.transform: Matrix4x4 {
+                matrix: earbudsBg.deformMatrix
+            }
+            display.transform: Matrix4x4 {
+                matrix: displayBg.deformMatrix
+            }
+            siri.transform: Matrix4x4 {
+                matrix: siriBg.deformMatrix
+            }
+            writing.transform: Matrix4x4 {
+                matrix: writingBg.deformMatrix
+            }
+            translate.transform: Matrix4x4 {
+                matrix: translateBg.deformMatrix
+            }
+            dictation.transform: Matrix4x4 {
+                matrix: dictationBg.deformMatrix
+            }
+            calculator.transform: Matrix4x4 {
+                matrix: calcBg.deformMatrix
+            }
+            spotlight.transform: Matrix4x4 {
+                matrix: spotBg.deformMatrix
+            }
+            island.transform: Matrix4x4 {
+                matrix: islandBg.deformMatrix
+            }
+            launcher.transform: Matrix4x4 {
+                matrix: launcherBg.deformMatrix
+            }
+            session.transform: Matrix4x4 {
+                matrix: sessionBg.deformMatrix
+            }
+            sidebar.transform: Matrix4x4 {
+                matrix: sidebarBg.deformMatrix
+            }
+            notifications.transform: Matrix4x4 {
+                matrix: Glass.panels ? notifsBg.deformMatrix : Qt.matrix4x4()
+            }
+            osd.transform: Matrix4x4 {
+                matrix: osdBg.deformMatrix
+            }
+            utilities.transform: Matrix4x4 {
+                matrix: utilsBg.deformMatrix
+            }
+            popouts.transform: Matrix4x4 {
+                matrix: popoutBg.deformMatrix
+            }
+        }
+
+        BarWrapper {
+            id: bar
+
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+
+            screen: root.screen
+            screenState: root.screenState
+            popouts: panels.popouts
+
+            fullscreen: root.hasFullscreen
+        }
+    }
+
+    ShellState.ComponentRef {
+        screen: root.screen
+        slot: "rootWindow"
+        component: root
+    }
+
+    ShellState.ComponentRef {
+        screen: root.screen
+        slot: "interactionWrapper"
+        component: interactions
+    }
+
+    ShellState.ComponentRef {
+        screen: root.screen
+        slot: "bar"
+        component: bar
+    }
+
+    ShellState.ComponentRef {
+        screen: root.screen
+        slot: "panels"
+        component: panels
+    }
+
+    // Deux arrondis concaves en haut d'un panneau collé au bord de l'écran (île, dashboard, centre de contrôle)
+    component Shoulders: Shape {
+        id: shoulders
+
+        required property real s
+        required property real lx
+        required property real rx
+
+        anchors.fill: parent
+        visible: Island.hideTopBorder && s > 0.5
+        preferredRendererType: Shape.CurveRenderer
+
+        ShapePath {
+            fillColor: blobGroup.color
+            strokeColor: "transparent"
+            startX: shoulders.lx - shoulders.s
+            startY: -1
+            PathLine {
+                x: shoulders.lx + 1
+                y: -1
+            }
+            PathLine {
+                x: shoulders.lx + 1
+                y: shoulders.s
+            }
+            PathArc {
+                x: shoulders.lx - shoulders.s
+                y: 0
+                radiusX: shoulders.s
+                radiusY: shoulders.s
+                direction: PathArc.Counterclockwise
+            }
+        }
+
+        ShapePath {
+            fillColor: blobGroup.color
+            strokeColor: "transparent"
+            startX: shoulders.rx + shoulders.s
+            startY: -1
+            PathLine {
+                x: shoulders.rx - 1
+                y: -1
+            }
+            PathLine {
+                x: shoulders.rx - 1
+                y: shoulders.s
+            }
+            PathArc {
+                x: shoulders.rx + shoulders.s
+                y: 0
+                radiusX: shoulders.s
+                radiusY: shoulders.s
+            }
+        }
+    }
+
+    component PanelBg: BlobRect {
+        required property Item panel
+        property real deformAmount: 0.15
+
+        group: blobGroup
+        x: panel.x + bar.implicitWidth
+        y: panel.y + root.borderThickness
+        implicitWidth: panel.width
+        implicitHeight: panel.height
+        radius: Tokens.rounding.extraLarge
+        deformScale: (deformAmount * Config.appearance.deformScale) / 10000
+    }
+}

@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  Ano Shell — Désinstallation propre et réversible
+# ============================================================================
+
+set -euo pipefail
+
+BACKUP_ROOT="$HOME/.local/share/ano-shell/backups"
+LATEST_BACKUP=""
+if [[ -d "$BACKUP_ROOT" ]]; then
+    LATEST_BACKUP="$(ls -1t "$BACKUP_ROOT" | head -n 1 || true)"
+fi
+
+echo "==> Arrêt des services utilisateur Ano Shell"
+systemctl --user disable --now \
+    ano-shell-theme.path \
+    ano-shell-login-sync.path \
+    ano-shell-watch.timer \
+    bt-audio-autoswitch.service 2>/dev/null || true
+
+rm -f \
+    "$HOME/.config/systemd/user/ano-shell-theme.path" \
+    "$HOME/.config/systemd/user/ano-shell-theme.service" \
+    "$HOME/.config/systemd/user/ano-shell-login-sync.path" \
+    "$HOME/.config/systemd/user/ano-shell-login-sync.service" \
+    "$HOME/.config/systemd/user/ano-shell-watch.timer" \
+    "$HOME/.config/systemd/user/ano-shell-watch.service" \
+    "$HOME/.config/systemd/user/xdg-desktop-portal-gtk.service.d/ano-shell-glass.conf"
+systemctl --user daemon-reload 2>/dev/null || true
+
+echo "==> Retrait des fichiers utilisateur Ano Shell"
+rm -rf "$HOME/.config/quickshell/ano-shell"
+
+if [[ -n "$LATEST_BACKUP" && -f "$BACKUP_ROOT/$LATEST_BACKUP/manifest" ]]; then
+    echo "==> Restauration de la sauvegarde $LATEST_BACKUP"
+    while IFS= read -r target; do
+        [[ -n "$target" ]] || continue
+        rel="${target#"$HOME/"}"
+        src="$BACKUP_ROOT/$LATEST_BACKUP/$rel"
+        if [[ -e "$src" || -L "$src" ]]; then
+            rm -rf "$target"
+            mkdir -p "$(dirname "$target")"
+            cp -a "$src" "$target"
+            echo "  ✓ Restauré : $target"
+        fi
+    done < "$BACKUP_ROOT/$LATEST_BACKUP/manifest"
+fi
+
+echo "Désinstallation terminée. Vos données dans ~/.config/ano-shell ont été conservées."

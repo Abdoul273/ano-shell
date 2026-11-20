@@ -1,0 +1,6 @@
+[Unit]
+Description=Ano Shell : vérification des surveillances web AuraTask
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/ano-watch

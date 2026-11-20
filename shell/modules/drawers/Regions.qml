@@ -1,0 +1,170 @@
+pragma ComponentBehavior: Bound
+
+import QtQuick
+import Quickshell
+import AnoShell.Config
+import qs.modules.bar as Bar
+
+Region {
+    id: root
+
+    required property Bar.BarWrapper bar
+    required property Panels panels
+    required property var win
+
+    readonly property real borderThickness: win.contentItem.Config.border.thickness
+    readonly property real clampedThickness: win.contentItem.Config.border.clampedThickness
+
+    x: bar.clampedWidth + win.dragMaskPadding
+    y: clampedThickness + win.dragMaskPadding
+    width: win.width - bar.clampedWidth - clampedThickness - win.dragMaskPadding * 2
+    height: win.height - clampedThickness * 2 - win.dragMaskPadding * 2
+    intersection: Intersection.Xor
+
+    R {
+        panel: root.panels.dashboard
+        y: 0
+        height: panel.height * (1 - root.panels.dashboard.offsetScale) + root.borderThickness
+    }
+
+    R {
+        panel: root.panels.controlCenter
+        y: 0
+        height: root.panels.controlCenter.visible ? Math.max(0, panel.y + root.borderThickness + panel.height) : 0
+    }
+
+    R {
+        panel: root.panels.dock
+    }
+
+    R {
+        panel: root.panels.clipboard
+        width: root.panels.clipboard.visible ? panel.width : 0
+    }
+
+    R {
+        panel: root.panels.emoji
+        width: root.panels.emoji.visible ? panel.width : 0
+    }
+
+    R {
+        panel: root.panels.keyhelp
+        width: root.panels.keyhelp.visible ? panel.width : 0
+    }
+
+    R {
+        panel: root.panels.clock
+        width: root.panels.clock.visible ? panel.width : 0
+    }
+
+    R {
+        panel: root.panels.settings
+        width: root.panels.settings.visible ? panel.width : 0
+    }
+
+    R {
+        panel: root.panels.annotate
+        width: root.panels.annotate.visible ? panel.width : 0
+    }
+
+    R {
+        panel: root.panels.earbuds
+        width: root.panels.earbuds.visible ? panel.width : 0
+    }
+
+    R {
+        panel: root.panels.display
+        width: root.panels.display.visible ? panel.width : 0
+    }
+
+    R {
+        panel: root.panels.siri
+        width: root.panels.siri.visible ? panel.width : 0
+    }
+
+    R {
+        panel: root.panels.writing
+        width: root.panels.writing.visible ? panel.width : 0
+    }
+
+    R {
+        panel: root.panels.translate
+        width: root.panels.translate.visible ? panel.width : 0
+    }
+
+    R {
+        panel: root.panels.dictation
+        width: root.panels.dictation.visible ? panel.width : 0
+    }
+
+    R {
+        panel: root.panels.calculator
+        width: root.panels.calculator.visible ? panel.width : 0
+    }
+
+    R {
+        panel: root.panels.spotlight
+        width: root.panels.spotlight.visible ? panel.width : 0
+    }
+
+    R {
+        panel: root.panels.island
+        y: 0
+        height: panel.height
+    }
+
+    R {
+        panel: root.panels.launcher
+        y: root.win.height - height
+        height: panel.height * (1 - root.panels.launcher.offsetScale) + root.borderThickness
+    }
+
+    R {
+        id: sessionRegion
+
+        panel: root.panels.sessionWrapper
+        x: root.win.width - width
+        width: panel.width * (1 - root.panels.session.offsetScale) + root.borderThickness + sidebarRegion.width
+    }
+
+    R {
+        id: sidebarRegion
+
+        panel: root.panels.sidebar
+        x: root.win.width - width
+        width: panel.width * (1 - root.panels.sidebar.offsetScale) + root.borderThickness
+    }
+
+    R {
+        panel: root.panels.osdWrapper
+        x: root.win.width - width
+        width: panel.width * (1 - root.panels.osd.offsetScale) + root.borderThickness + sessionRegion.width
+    }
+
+    R {
+        panel: root.panels.notifications
+        y: 0
+        height: panel.height + root.borderThickness
+    }
+
+    R {
+        panel: root.panels.utilities
+        y: root.win.height - height
+        height: panel.height * (1 - root.panels.utilities.offsetScale) + root.borderThickness
+    }
+
+    R {
+        panel: root.panels.popoutsWrapper
+        width: panel.width * (1 - root.panels.popoutsWrapper.offsetScale)
+    }
+
+    component R: Region {
+        required property Item panel
+
+        x: panel.x + root.bar.implicitWidth
+        y: panel.y + root.borderThickness
+        width: panel.width
+        height: panel.height
+        intersection: Intersection.Subtract
+    }
+}

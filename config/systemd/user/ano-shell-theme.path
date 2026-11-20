@@ -1,0 +1,10 @@
+[Unit]
+Description=Ano Shell : surveille la palette GTK et glass.json
+
+[Path]
+PathChanged=%h/.config/gtk-4.0/gtk.css
+PathChanged=%h/.config/ano-shell/glass.json
+Unit=ano-shell-theme.service
+
+[Install]
+WantedBy=default.target

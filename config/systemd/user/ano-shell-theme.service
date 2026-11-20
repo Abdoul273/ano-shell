@@ -1,0 +1,6 @@
+[Unit]
+Description=Ano Shell : régénère les styles Liquid Glass GTK et Qt
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'BIN=$(command -v ano-shell || echo "%h/.local/bin/ano-shell"); exec "$BIN" theme --gtk-only'

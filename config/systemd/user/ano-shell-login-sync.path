@@ -1,0 +1,10 @@
+[Unit]
+Description=Ano Shell : surveille le fond d'écran et l'avatar pour SDDM
+
+[Path]
+PathChanged=%h/.local/state/ano-shell/wallpaper/current
+PathChanged=%h/.face
+Unit=ano-shell-login-sync.service
+
+[Install]
+WantedBy=default.target

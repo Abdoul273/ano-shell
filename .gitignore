@@ -1,0 +1,13 @@
+build/
+_deps/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+*.pkg.tar.*
+pkg/
+src/
+.DS_Store

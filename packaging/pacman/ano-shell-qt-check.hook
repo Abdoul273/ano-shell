@@ -1,0 +1,9 @@
+[Trigger]
+Operation = Upgrade
+Type = Package
+Target = qt6-base
+
+[Action]
+Description = Vérification de compatibilité Qt6 pour Ano Shell (ano-shell doctor)...
+When = PostTransaction
+Exec = /bin/sh -c 'command -v ano-shell >/dev/null 2>&1 && ano-shell doctor --quiet || true'

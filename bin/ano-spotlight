@@ -1,0 +1,2060 @@
+#!/usr/bin/env python3
+"""Recherche et calculatrice façon Spotlight pour Caelestia.
+
+    ano-spotlight            recherche web instantanée (Super + Espace)
+    ano-spotlight calc       calculatrice rapide (Super + O)
+
+Relancer la même commande ferme la fenêtre. Les résultats web s'affichent
+sans ouvrir le navigateur ; seul un clic (ou Entrée) ouvre la page.
+"""
+
+from __future__ import annotations
+
+import ast
+import html
+import json
+import math
+import os
+import shutil
+import operator
+import re
+import subprocess
+import sys
+import threading
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass
+from html.parser import HTMLParser
+from pathlib import Path
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango
+
+
+CSS_FILE = Path.home() / ".config/ano-spotlight/style.css"
+# Clé API Brave Search (gratuite, 2 000 recherches/mois) : https://api-dashboard.search.brave.com
+API_KEY_FILE = Path.home() / ".config/ano-spotlight/brave-api-key"
+STATE_DIR = Path.home() / ".local/state/ano-spotlight"
+HISTORY_FILE = STATE_DIR / "calc-history.json"
+USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36"
+TIMEOUT = 6
+MAX_RESULTS = 14
+MAX_HISTORY = 6
+
+
+# ---------------------------------------------------------------- calculatrice
+
+class CalcError(Exception):
+    pass
+
+
+def _fact(n: float) -> float:
+    if n < 0 or n != int(n) or n > 170:
+        raise CalcError("factorielle invalide")
+    return float(math.factorial(int(n)))
+
+
+def _deg(fn):
+    return lambda x: fn(math.radians(x))
+
+
+def _adeg(fn):
+    return lambda x: math.degrees(fn(x))
+
+
+FUNCTIONS = {
+    "sqrt": math.sqrt, "racine": math.sqrt, "cbrt": lambda x: math.copysign(abs(x) ** (1 / 3), x),
+    # Trigonométrie en degrés, comme une calculatrice classique
+    "sin": _deg(math.sin), "cos": _deg(math.cos), "tan": _deg(math.tan),
+    "asin": _adeg(math.asin), "acos": _adeg(math.acos), "atan": _adeg(math.atan),
+    "ln": math.log, "log": math.log10, "log2": math.log2, "exp": math.exp,
+    "abs": abs, "round": round, "arrondi": round, "floor": math.floor, "ceil": math.ceil,
+    "fact": _fact, "factorielle": _fact,
+}
+CONSTANTS = {"pi": math.pi, "π": math.pi, "e": math.e, "tau": math.tau, "phi": (1 + 5 ** 0.5) / 2, "ans": 0.0}
+BINOPS = {
+    ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+    ast.Div: operator.truediv, ast.FloorDiv: operator.floordiv, ast.Mod: operator.mod, ast.Pow: operator.pow,
+}
+UNOPS = {ast.UAdd: operator.pos, ast.USub: operator.neg}
+
+
+def normalise(expr: str) -> str:
+    s = expr.strip().lower().replace("\u202f", "").replace("\u00a0", "")
+    s = s.replace("×", "*").replace("÷", "/").replace("−", "-").replace("^", "**").replace("√", "sqrt")
+    s = re.sub(r"(?<=\d)\s+(?=\d{3}\b)", "", s)          # 1 000 000 → 1000000
+    s = re.sub(r"(?<=\d),(?=\d)", ".", s)                # virgule décimale
+    s = re.sub(r"(?<=[\d)])\s*x\s*(?=[\d(])", "*", s)    # 3 x 4 → 3*4
+    # « 50 + 20 % » = 60 et « 50 - 20 % » = 40, comme sur macOS
+    m = re.fullmatch(r"(.+?)\s*([+-])\s*(\d+(?:\.\d+)?)\s*%\s*", s)
+    if m and not m.group(1).rstrip().endswith(("*", "/", "+", "-", "(")):
+        s = f"({m.group(1)})*(1{m.group(2)}{m.group(3)}/100)"
+    s = re.sub(r"(\d+(?:\.\d+)?)\s*%\s*(?:de|of)\s*", r"(\1/100)*", s)  # 20% de 150
+    s = re.sub(r"(\d+(?:\.\d+)?)\s*%", r"(\1/100)", s)   # 15% → 0.15
+    s = re.sub(r"(\d+(?:\.\d+)?)\s*!", r"fact(\1)", s)   # 5! → fact(5)
+    s = re.sub(r"(?<![a-z\d.])(\d+(?:\.\d+)?)\s*(?=[a-zπ(])", r"\1*", s)  # 2pi, 2(3+4) mais pas log2(
+    s = re.sub(r"\)\s*(?=[\d(a-zπ])", ")*", s)           # (1+2)(3+4)
+    return s
+
+
+def _eval(node: ast.AST) -> float:
+    if isinstance(node, ast.Expression):
+        return _eval(node.body)
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return node.value
+    if isinstance(node, ast.BinOp) and type(node.op) in BINOPS:
+        left, right = _eval(node.left), _eval(node.right)
+        if isinstance(node.op, ast.Pow) and abs(right) > 1000:
+            raise CalcError("exposant trop grand")
+        return BINOPS[type(node.op)](left, right)
+    if isinstance(node, ast.UnaryOp) and type(node.op) in UNOPS:
+        return UNOPS[type(node.op)](_eval(node.operand))
+    if isinstance(node, ast.Name) and node.id in CONSTANTS:
+        return CONSTANTS[node.id]
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in FUNCTIONS and len(node.args) == 1 and not node.keywords:
+        return FUNCTIONS[node.func.id](_eval(node.args[0]))
+    raise CalcError("expression non reconnue")
+
+
+def calculate(expr: str) -> float | None:
+    """Renvoie le résultat, ou None si le texte n'est pas un calcul."""
+    s = normalise(expr)
+    if not s or not re.search(r"\d|pi|π|\be\b|tau|phi", s):
+        return None
+    if not re.fullmatch(r"[\d\s.+\-*/%()a-zπ,]*", s):
+        return None
+    try:
+        tree = ast.parse(s, mode="eval")
+        value = _eval(tree)
+    except (SyntaxError, CalcError, ValueError, ZeroDivisionError, OverflowError, TypeError):
+        return None
+    if isinstance(value, complex) or math.isnan(value) or math.isinf(value):
+        return None
+    return float(value)
+
+
+def is_calculation(expr: str) -> bool:
+    """Vrai si le texte ressemble à un calcul (et pas juste à un nombre seul)."""
+    s = normalise(expr)
+    return bool(re.search(r"[+\-*/%()]|\b(?:sqrt|sin|cos|tan|ln|log|exp|fact|racine)\b|!", s)) and calculate(expr) is not None
+
+
+# ---------------------------------------------------------------- conversions d'unités
+
+# unité → (grandeur, facteur vers l'unité de base)
+UNITS = {}
+
+
+def _units(dim: str, table: dict[str, float]) -> None:
+    for names, factor in table.items():
+        for name in names.split("|"):
+            UNITS[name] = (dim, factor)
+
+
+_units("longueur", {"mm": 0.001, "cm": 0.01, "m|metre|metres|mètre|mètres": 1, "km|kilometre|kilometres|kilomètre|kilomètres": 1000,
+                    "in|pouce|pouces|inch|inches": 0.0254, "ft|pied|pieds|feet|foot": 0.3048, "yd|yard|yards": 0.9144,
+                    "mi|mile|miles": 1609.344, "nmi|mille|milles": 1852})
+_units("masse", {"mg": 0.001, "g|gramme|grammes": 1, "kg|kilo|kilos|kilogramme|kilogrammes": 1000, "t|tonne|tonnes": 1e6,
+                 "lb|lbs|livre|livres|pound|pounds": 453.59237, "oz|once|onces|ounce|ounces": 28.349523125})
+_units("données", {"o|octet|octets|b|byte|bytes": 1, "ko|kb": 1e3, "mo|mb": 1e6, "go|gb": 1e9, "to|tb": 1e12,
+                   "kio|kib": 1024, "mio|mib": 1024 ** 2, "gio|gib": 1024 ** 3, "tio|tib": 1024 ** 4})
+_units("durée", {"ms": 0.001, "s|sec|seconde|secondes": 1, "min|minute|minutes": 60, "h|heure|heures": 3600,
+                 "j|jour|jours|d|day|days": 86400, "sem|semaine|semaines|week|weeks": 604800,
+                 "an|ans|annee|annees|année|années|year|years": 31557600})
+_units("vitesse", {"m/s": 1, "km/h|kmh": 1 / 3.6, "mph": 0.44704, "kn|noeud|noeuds|nœud|nœuds": 0.514444})
+_units("volume", {"ml": 0.001, "cl": 0.01, "dl": 0.1, "l|litre|litres": 1, "gal|gallon|gallons": 3.785411784})
+TEMPS = {"c": "c", "°c": "c", "celsius": "c", "f": "f", "°f": "f", "fahrenheit": "f", "k": "k", "kelvin": "k"}
+UNIT_LABEL = {"c": "°C", "f": "°F", "k": "K"}
+UNIT_DISPLAY = {"ko": "ko", "mo": "Mo", "go": "Go", "to": "To", "kb": "kB", "mb": "MB", "gb": "GB", "tb": "TB",
+                "kio": "Kio", "mio": "Mio", "gio": "Gio", "tio": "Tio", "kib": "KiB", "mib": "MiB", "gib": "GiB",
+                "tib": "TiB", "l": "L", "ml": "mL", "cl": "cL", "dl": "dL", "km/h": "km/h", "kmh": "km/h"}
+
+_CONV = re.compile(r"^\s*(.+?)\s*(°?[a-zµœèé/]+)\s+(?:en|in|to|vers|=|->|→)\s+(°?[a-zµœèé/]+)\s*$", re.I)
+
+
+def convert(text: str) -> str | None:
+    """« 10 km en miles » → « 6,213712 mi », ou None si ce n'est pas une conversion."""
+    m = _CONV.match(text.strip())
+    if not m:
+        return None
+    amount = calculate(m.group(1))
+    src, dst = m.group(2).lower(), m.group(3).lower()
+    if amount is None:
+        return None
+    if src in TEMPS and dst in TEMPS:
+        a, b = TEMPS[src], TEMPS[dst]
+        kelvin = {"c": amount + 273.15, "f": (amount - 32) * 5 / 9 + 273.15, "k": amount}[a]
+        value = {"c": kelvin - 273.15, "f": (kelvin - 273.15) * 9 / 5 + 32, "k": kelvin}[b]
+        return f"{format_number(round(value, 6))} {UNIT_LABEL[b]}"
+    if src in UNITS and dst in UNITS and UNITS[src][0] == UNITS[dst][0]:
+        value = amount * UNITS[src][1] / UNITS[dst][1]
+        return f"{format_number(round(value, 6))} {UNIT_DISPLAY.get(dst, m.group(3))}"
+    return None
+
+
+def format_number(value: float) -> str:
+    """Format français : espaces pour les milliers, virgule décimale."""
+    if abs(value) >= 1e15 or (value != 0 and abs(value) < 1e-9):
+        mant, exp = f"{value:.10e}".split("e")
+        mant = mant.rstrip("0").rstrip(".").replace(".", ",")
+        return f"{mant} × 10^{int(exp)}"
+    rounded = round(value, 10)
+    if rounded == int(rounded):
+        text = f"{int(rounded):,}".replace(",", " ")
+    else:
+        text = f"{rounded:,.10f}".rstrip("0").rstrip(".")
+        whole, _, frac = text.partition(".")
+        text = whole.replace(",", " ") + ("," + frac if frac else "")
+    return text
+
+
+# ---------------------------------------------------------------- recherche web
+
+@dataclass
+class WebResult:
+    title: str
+    url: str
+    snippet: str
+    icon: str = ""
+
+    @property
+    def icon_url(self) -> str:
+        # Icône fournie par le moteur, sinon celle du site via le service d'icônes de Google
+        return self.icon or "https://www.google.com/s2/favicons?" + urllib.parse.urlencode({"domain": self.domain, "sz": 64})
+
+    @property
+    def domain(self) -> str:
+        host = urllib.parse.urlparse(self.url).netloc
+        return host[4:] if host.startswith("www.") else host
+
+
+@dataclass
+class TopHit:
+    title: str
+    text: str
+    url: str
+    source: str
+
+
+class _DDGParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.results: list[WebResult] = []
+        self._field: str | None = None
+        self._buf: list[str] = []
+        self._current: dict[str, str] = {}
+        self._in_ad = False
+        self._depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        cls = a.get("class") or ""
+        if tag == "div" and "result" in cls.split():
+            self._in_ad = "result--ad" in cls
+        if tag == "a" and "result__a" in cls:
+            self._flush()
+            self._current = {"url": self._clean(a.get("href", ""))}
+            self._field, self._buf = "title", []
+        elif tag == "a" and "result__snippet" in cls:
+            self._field, self._buf = "snippet", []
+
+    def handle_endtag(self, tag):
+        if tag == "a" and self._field:
+            self._current[self._field] = html.unescape("".join(self._buf)).strip()
+            self._field = None
+
+    def handle_data(self, data):
+        if self._field:
+            self._buf.append(data)
+
+    def close(self):
+        super().close()
+        self._flush()
+
+    def _flush(self):
+        c = self._current
+        if c.get("url") and c.get("title") and not self._in_ad:
+            self.results.append(WebResult(c["title"], c["url"], c.get("snippet", "")))
+        self._current = {}
+
+    @staticmethod
+    def _clean(href: str) -> str:
+        if href.startswith("//"):
+            href = "https:" + href
+        parsed = urllib.parse.urlparse(href)
+        if parsed.netloc.endswith("duckduckgo.com") and parsed.path.startswith("/l/"):
+            target = urllib.parse.parse_qs(parsed.query).get("uddg", [""])[0]
+            return target or href
+        return href
+
+
+def _get(url: str) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.6"})
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        return resp.read()
+
+
+_TAG = re.compile(r"<[^>]+>")
+
+
+def _text(fragment: str) -> str:
+    return re.sub(r"\s+", " ", html.unescape(_TAG.sub("", fragment))).strip()
+
+
+def search_brave(query: str) -> list[WebResult]:
+    """Brave Search : index propre, résultats de qualité, avec icônes des sites."""
+    page = _get("https://search.brave.com/search?" + urllib.parse.urlencode({"q": query, "source": "web"})).decode("utf-8", "replace")
+    results = []
+    for block in page.split('data-type="web"')[1:]:
+        url = re.search(r'<a href="(https?://[^"]+)"', block)
+        title = re.search(r'search-snippet-title[^"]*"[^>]*title="([^"]*)"', block)
+        if not url or not title:
+            continue
+        snippet = re.search(r'class="content[^"]*"[^>]*>(.*?)</div>', block, re.S)
+        icon = re.search(r'<img src="(https://imgs\.search\.brave\.com/[^"]+)"[^>]*class="favicon', block)
+        results.append(WebResult(html.unescape(title.group(1)), html.unescape(url.group(1)),
+                                 _text(snippet.group(1)) if snippet else "", icon.group(1) if icon else ""))
+    return results
+
+
+def _bing_url(href: str) -> str:
+    href = html.unescape(href)
+    parsed = urllib.parse.urlparse(href)
+    if parsed.netloc.endswith("bing.com") and parsed.path.startswith("/ck/"):
+        u = urllib.parse.parse_qs(parsed.query).get("u", [""])[0]
+        if u.startswith("a1"):
+            import base64
+            try:
+                return base64.urlsafe_b64decode(u[2:] + "=" * (-len(u[2:]) % 4)).decode()
+            except ValueError:
+                pass
+    return href
+
+
+def search_bing(query: str) -> list[WebResult]:
+    page = _get("https://www.bing.com/search?" + urllib.parse.urlencode({"q": query, "setlang": "fr", "cc": "FR"})).decode("utf-8", "replace")
+    results = []
+    for block in page.split('<li class="b_algo')[1:]:
+        link = re.search(r'<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', block, re.S)
+        if not link:
+            continue
+        snippet = re.search(r'<p[^>]*>(.*?)</p>', block, re.S)
+        results.append(WebResult(_text(link.group(2)), _bing_url(link.group(1)), _text(snippet.group(1)) if snippet else ""))
+    return results
+
+
+def search_ddg(query: str) -> list[WebResult]:
+    url = "https://html.duckduckgo.com/html/?" + urllib.parse.urlencode({"q": query, "kl": "fr-fr"})
+    parser = _DDGParser()
+    parser.feed(_get(url).decode("utf-8", "replace"))
+    parser.close()
+    return [r for r in parser.results if "duckduckgo.com/y.js" not in r.url]
+
+
+def search_brave_api(query: str) -> list[WebResult]:
+    """API officielle Brave Search : fiable, rapide, sans blocage."""
+    key = API_KEY_FILE.read_text().strip()
+    url = "https://api.search.brave.com/res/v1/web/search?" + urllib.parse.urlencode(
+        {"q": query, "count": 15, "search_lang": "fr", "country": "FR", "safesearch": "moderate"})
+    req = urllib.request.Request(url, headers={"Accept": "application/json", "X-Subscription-Token": key, "User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        data = json.loads(resp.read())
+    return [WebResult(_text(r.get("title", "")), r.get("url", ""), _text(r.get("description", "")),
+                      (r.get("profile") or {}).get("img", ""))
+            for r in data.get("web", {}).get("results", []) if r.get("url")]
+
+
+def has_api_key() -> bool:
+    try:
+        return bool(API_KEY_FILE.read_text().strip())
+    except OSError:
+        return False
+
+
+def suggestions(query: str) -> list[str]:
+    """Suggestions Google instantanées pendant la saisie."""
+    url = "https://suggestqueries.google.com/complete/search?" + urllib.parse.urlencode({"client": "firefox", "hl": "fr", "q": query})
+    data = json.loads(_get(url).decode("utf-8", "replace"))
+    return [x for x in data[1] if x.lower() != query.lower()][:5]
+
+
+# Un moteur qui nous bloque (429, captcha) est mis en pause quelques minutes
+_blocked_until: dict[str, float] = {}
+
+
+def _engine_ok(engine) -> bool:
+    import time
+    return time.time() >= _blocked_until.get(engine.__name__, 0)
+
+
+def _engine_failed(engine, exc: Exception) -> None:
+    import time
+    if isinstance(exc, urllib.error.HTTPError) and exc.code in (403, 429):
+        _blocked_until[engine.__name__] = time.time() + 300
+
+
+ENGINES = (search_brave, search_bing, search_ddg)
+_cache: dict[str, list[WebResult]] = {}
+
+
+def _norm_url(url: str) -> str:
+    p = urllib.parse.urlparse(url)
+    host = p.netloc.lower().removeprefix("www.")
+    return host + p.path.rstrip("/")
+
+
+def web_search(query: str) -> list[WebResult]:
+    """Interroge plusieurs moteurs en parallèle et fusionne leurs résultats."""
+    key = query.lower()
+    if key in _cache:
+        return _cache[key]
+    buckets: dict[str, list[WebResult]] = {}
+    errors = []
+
+    engines = (search_brave_api,) if has_api_key() else tuple(e for e in ENGINES if _engine_ok(e)) or ENGINES
+
+    def run(engine):
+        try:
+            buckets[engine.__name__] = engine(query)
+        except Exception as exc:
+            _engine_failed(engine, exc)
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run, args=(e,), daemon=True) for e in engines]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=TIMEOUT + 1)
+    merged: list[WebResult] = []
+    seen: dict[str, WebResult] = {}
+    # Entrelace les moteurs (Brave d'abord) pour garder les meilleurs de chacun
+    lists = [buckets.get(e.__name__, []) for e in engines]
+    for i in range(max((len(l) for l in lists), default=0)):
+        for l in lists:
+            if i < len(l):
+                r = l[i]
+                k = _norm_url(r.url)
+                if k in seen:
+                    if not seen[k].snippet and r.snippet:
+                        seen[k].snippet = r.snippet
+                    if not seen[k].icon and r.icon:
+                        seen[k].icon = r.icon
+                    continue
+                seen[k] = r
+                merged.append(r)
+    if not merged and errors:
+        raise errors[0]
+    merged = merged[:MAX_RESULTS]
+    if merged:
+        _cache[key] = merged
+    return merged
+
+
+def fetch_icon(url: str) -> bytes | None:
+    try:
+        return _get(url)
+    except Exception:
+        return None
+
+
+def top_hit(query: str) -> TopHit | None:
+    """Résumé Wikipédia (en français) du sujet recherché, comme la carte de Spotlight."""
+    try:
+        api = "https://fr.wikipedia.org/w/api.php?" + urllib.parse.urlencode(
+            {"action": "query", "list": "search", "srsearch": query, "srlimit": 1, "format": "json"})
+        hits = json.loads(_get(api)).get("query", {}).get("search", [])
+        if not hits:
+            return None
+        title = hits[0]["title"]
+        summary = json.loads(_get("https://fr.wikipedia.org/api/rest_v1/page/summary/" + urllib.parse.quote(title.replace(" ", "_"))))
+        text = (summary.get("extract") or "").strip()
+        if not text or summary.get("type") == "disambiguation":
+            return None
+        return TopHit(summary.get("title", title), text,
+                      summary.get("content_urls", {}).get("desktop", {}).get("page", ""), "Wikipédia")
+    except Exception:
+        return None
+
+
+CLOCK_RE = re.compile(r"^(minuteur|timer|chrono(?:mètre|metre)?|stopwatch|stop(?:per)?\s+(?:le\s+)?(?:minuteur|chrono(?:mètre|metre)?|timer))\b\s*(.*)$", re.I)
+
+
+def clock_command(text: str) -> tuple[list[str], str] | None:
+    """« minuteur 5 min », « timer 1h30 », « chrono », « stop minuteur » → commande de la Dynamic Island."""
+    app = {"horloge": "timer", "alarme": "alarms", "alarmes": "alarms", "réveil": "alarms", "pomodoro": "pomodoro"}.get(text.strip().lower())
+    if app:
+        return ["hyprctl", "dispatch", 'hl.dsp.global("ano-shell:clock")'], "Ouvrir l'Horloge"
+    m = CLOCK_RE.match(text.strip())
+    if not m:
+        return None
+    word, rest = m.group(1).lower(), m.group(2).strip()
+    base = ["qs", "-c", "ano-shell", "ipc", "call", "island"]
+    if word.startswith("stop"):
+        return base + ["stop"], "Arrêter le minuteur ou le chronomètre"
+    if word.startswith("chrono") or word == "stopwatch":
+        return base + ["stopwatch"], "Lancer le chronomètre dans l'île"
+    if not re.search(r"\d", rest):
+        return ["hyprctl", "dispatch", 'hl.dsp.global("ano-shell:clock")'], "Ouvrir l'Horloge (minuteur)"
+    return base + ["timer", rest], f"Lancer un minuteur de {rest} dans l'île"
+
+
+# ---------------------------------------------------------------- apps, actions, fichiers
+
+import unicodedata
+
+
+def fold(text: str) -> str:
+    """Minuscules sans accents, pour comparer « parametres » et « Paramètres »."""
+    return "".join(c for c in unicodedata.normalize("NFD", text.lower()) if unicodedata.category(c) != "Mn")
+
+
+_APPS: list | None = None
+
+
+def all_apps() -> list:
+    global _APPS
+    if _APPS is None:
+        _APPS = [a for a in Gio.AppInfo.get_all() if a.should_show() and isinstance(a, Gio.DesktopAppInfo)]
+    return _APPS
+
+
+def score_text(q: str, name: str) -> int:
+    n = fold(name)
+    if not n:
+        return 0
+    if n == q:
+        return 100
+    if n.startswith(q):
+        return 90
+    words = re.split(r"[\s\-_.]+", n)
+    if any(w.startswith(q) for w in words):
+        return 80
+    initials = "".join(w[0] for w in words if w)
+    if len(q) >= 2 and initials.startswith(q):
+        return 70
+    if q in n:
+        return 60
+    return 0
+
+
+def search_apps(query: str, limit: int = 5) -> list:
+    q = fold(query.strip())
+    if not q:
+        return []
+    scored = []
+    for a in all_apps():
+        best = score_text(q, a.get_display_name() or a.get_name() or "")
+        if best < 60:
+            extra = [a.get_generic_name() or "", *(a.get_keywords() or []), os.path.basename(a.get_executable() or "")]
+            best = max(best, *(min(55, score_text(q, t)) for t in extra))
+        if best >= 50:
+            scored.append((best, a))
+    scored.sort(key=lambda x: (-x[0], (x[1].get_display_name() or "").lower()))
+    return [a for _, a in scored[:limit]]
+
+
+HOME = str(Path.home())
+BIN = HOME + "/.local/bin/"
+
+# Actions du système : (titre, mots-clés, icône, commande)
+ACTIONS = [
+    ("Verrouiller l'écran", "verrouiller lock ecran", "󰌾", ["qs", "-c", "ano-shell", "ipc", "call", "lock", "lock"]),
+    ("Mettre en veille", "veille suspendre dormir sleep", "󰤄", ["systemctl", "suspend"]),
+    ("Redémarrer", "redemarrer reboot restart", "󰜉", ["systemctl", "reboot"]),
+    ("Éteindre", "eteindre shutdown arreter poweroff", "󰐥", ["systemctl", "poweroff"]),
+    ("Se déconnecter", "deconnecter logout session", "󰍃", [BIN + "ano-logout"]),
+    ("Paramètres de Caelestia", "parametres reglages settings nexus preferences", "󰒓", ["qs", "-c", "ano-shell", "ipc", "call", "nexus", "open"]),
+    ("Horloge", "horloge minuteur chrono alarme pomodoro reveil", "󰔛", ["hyprctl", "dispatch", 'hl.dsp.global("ano-shell:clock")']),
+    ("Écouteurs 3D", "ecouteurs airpods bluetooth cetw572 casque batterie", "󰋋", ["hyprctl", "dispatch", 'hl.dsp.global("ano-shell:earbuds")']),
+    ("Calculatrice", "calculatrice calcul", "󰃬", [BIN + "ano-spotlight", "calc"]),
+    ("Capture d'écran", "capture ecran screenshot", "󰹑", ["qs", "-c", "ano-shell", "ipc", "call", "picker", "open"]),
+    ("Mission Control", "mission control fenetres bureaux", "󰕰", ["qs", "-c", "ano-shell", "ipc", "call", "missioncontrol", "open"]),
+    ("Raccourcis clavier", "raccourcis clavier shortcuts aide", "󰌌", [BIN + "ano-shortcuts"]),
+    ("Presse-papiers", "presse papiers clipboard historique", "󰅌", [BIN + "ano-clipboard-pro"]),
+    ("Emojis", "emoji emojis smiley", "󰞅", [BIN + "ano-emoji-pro"]),
+    ("Choisir l'affichage", "affichage ecran externe projection display", "󰍹", [BIN + "ano-display-pro"]),
+]
+
+
+def search_actions(query: str, limit: int = 3) -> list:
+    q = fold(query.strip())
+    if len(q) < 2:
+        return []
+    found = []
+    for title, keys, icon, cmd in ACTIONS:
+        best = max(score_text(q, title), *(score_text(q, k) for k in keys.split()))
+        if best >= 70:
+            found.append((best, (title, icon, cmd)))
+    found.sort(key=lambda x: -x[0])
+    return [f for _, f in found[:limit]]
+
+
+def search_files(query: str, limit: int = 6) -> list[str]:
+    """Fichiers et dossiers du dossier perso dont le nom contient la recherche (fd, rapide)."""
+    q = query.strip()
+    if len(q) < 3 or not shutil.which("fd"):
+        return []
+    try:
+        out = subprocess.run(
+            ["fd", "--ignore-case", "--fixed-strings", "--max-results", str(limit * 3), "--max-depth", "7",
+             "--exclude", "node_modules", "--exclude", ".git", "--exclude", "target", "--exclude", "__pycache__",
+             q, HOME],
+            capture_output=True, text=True, timeout=1.5,
+        ).stdout.splitlines()
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    fq = fold(q)
+    # Les noms qui commencent par la recherche d'abord, puis les chemins les plus courts
+    out.sort(key=lambda p: (not fold(os.path.basename(p.rstrip("/"))).startswith(fq), p.count("/"), len(p)))
+    return out[:limit]
+
+
+NOTES_FILE = Path(os.environ.get("XDG_DATA_HOME") or f"{HOME}/.local/share") / "aethernotes/notes.json"
+TASKS_FILE = Path(os.environ.get("XDG_DATA_HOME") or f"{HOME}/.local/share") / "auratask/tasks.json"
+RECENT_FILE = Path(os.environ.get("XDG_DATA_HOME") or f"{HOME}/.local/share") / "recently-used.xbel"
+PRIORITY_FR = {"urgent": "Urgente", "high": "Haute", "medium": "Moyenne", "low": "Basse"}
+
+
+def _load(path: Path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _snippet(text: str, q: str, width: int = 70) -> str:
+    """Extrait autour du mot cherché, sur une ligne."""
+    flat = re.sub(r"\s+", " ", re.sub(r"[#*_>`~\[\]]", "", text)).strip()
+    i = fold(flat).find(q)
+    if i < 0:
+        return flat[:width]
+    start = max(0, i - width // 3)
+    part = flat[start:start + width]
+    return ("…" if start > 0 else "") + part + ("…" if start + width < len(flat) else "")
+
+
+def search_notes(query: str, limit: int = 4) -> list[dict]:
+    """Notes AetherNotes (fichier partagé avec l'app et les Notes rapides)."""
+    q = fold(query.strip())
+    data = _load(NOTES_FILE)
+    if len(q) < 2 or not data:
+        return []
+    found = []
+    for n in data.get("notes", []):
+        if n.get("isArchived") or n.get("archived") or n.get("isEncrypted") or n.get("encrypted"):
+            continue
+        title = (n.get("title") or "").strip()
+        body = n.get("content") or ""
+        if not title:
+            title = next((l.strip("# ").strip() for l in body.splitlines() if l.strip()), "Note sans titre")
+        ft, fb = fold(title), fold(body)
+        if q in ft:
+            score = 100 if ft.startswith(q) else 80
+        elif q in fb:
+            score = 50
+        else:
+            continue
+        found.append((score, n.get("updatedAt") or "", {"id": n.get("id"), "title": title, "snippet": _snippet(body, q) if q in fb else _snippet(body, "")}))
+    found.sort(key=lambda x: x[1], reverse=True)  # plus récentes d'abord…
+    found.sort(key=lambda x: -x[0])  # …à pertinence égale
+    return [f for _, _, f in found[:limit]]
+
+
+def _due_text(iso: str | None) -> str:
+    if not iso:
+        return ""
+    try:
+        import datetime as dt
+        d = dt.datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone()
+        today = dt.date.today()
+        delta = (d.date() - today).days
+        day = "aujourd'hui" if delta == 0 else "demain" if delta == 1 else "hier" if delta == -1 else f"le {d:%d/%m}"
+        late = d < dt.datetime.now().astimezone()
+        return ("En retard · " if late else "") + f"{day} à {d:%H:%M}"
+    except ValueError:
+        return ""
+
+
+def search_tasks(query: str, limit: int = 4) -> list[dict]:
+    """Tâches AuraTask (non terminées d'abord)."""
+    q = fold(query.strip())
+    data = _load(TASKS_FILE)
+    if len(q) < 2 or not data:
+        return []
+    found = []
+    for t in data.get("tasks", []):
+        title = t.get("title") or ""
+        hay = fold(title + " " + (t.get("description") or "") + " " + (t.get("category") or "") + " " + " ".join(t.get("tags") or []))
+        if q not in hay:
+            continue
+        score = (0 if t.get("completed") else 100) + (20 if fold(title).startswith(q) else 10 if q in fold(title) else 0)
+        found.append((score, {"id": t.get("id"), "title": title, "done": bool(t.get("completed")),
+                              "priority": t.get("priority") or "medium", "due": _due_text(t.get("dueDate"))}))
+    found.sort(key=lambda x: -x[0])
+    return [f for _, f in found[:limit]]
+
+
+def today_tasks(limit: int = 4) -> list[dict]:
+    """Tâches à faire aujourd'hui ou en retard (Spotlight sans recherche)."""
+    import datetime as dt
+    data = _load(TASKS_FILE)
+    if not data:
+        return []
+    end = dt.datetime.combine(dt.date.today(), dt.time.max).astimezone()
+    out = []
+    for t in data.get("tasks", []):
+        if t.get("completed") or not t.get("dueDate"):
+            continue
+        try:
+            d = dt.datetime.fromisoformat(t["dueDate"].replace("Z", "+00:00")).astimezone()
+        except ValueError:
+            continue
+        if d <= end:
+            out.append((d, {"id": t.get("id"), "title": t.get("title") or "", "done": False,
+                            "priority": t.get("priority") or "medium", "due": _due_text(t.get("dueDate"))}))
+    out.sort(key=lambda x: x[0])
+    return [f for _, f in out[:limit]]
+
+
+def recent_files(query: str = "", limit: int = 6) -> list[str]:
+    """Fichiers ouverts récemment (recently-used.xbel), les plus récents d'abord."""
+    try:
+        import xml.etree.ElementTree as ET
+        root = ET.parse(RECENT_FILE).getroot()
+    except (OSError, ET.ParseError):
+        return []
+    q = fold(query.strip())
+    items = []
+    for b in root.findall("bookmark"):
+        href = b.get("href") or ""
+        if not href.startswith("file://"):
+            continue
+        path = urllib.parse.unquote(href[7:])
+        if q and q not in fold(os.path.basename(path)):
+            continue
+        items.append((b.get("modified") or b.get("visited") or "", path))
+    items.sort(key=lambda x: x[0], reverse=True)
+    out, seen = [], set()
+    for _, path in items:
+        if path in seen or not os.path.exists(path):
+            continue
+        seen.add(path)
+        out.append(path)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def open_url(url: str) -> None:
+    subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def copy_text(text: str) -> None:
+    try:
+        subprocess.run(["wl-copy", text], check=False, timeout=2)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+# ---------------------------------------------------------------- interface
+
+class Spotlight(Gtk.Application):
+    def __init__(self, mode: str) -> None:
+        app_id = "io.caelestia.Calc" if mode == "calc" else "io.caelestia.Spotlight"
+        super().__init__(application_id=app_id, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+        self.mode = mode
+        self.window: Gtk.ApplicationWindow | None = None
+        self.debounce = 0
+        self.suggest_debounce = 0
+        self.query_seq = 0
+        self.suggest_seq = 0
+        # Contenu affiché pour la recherche, reconstruit à chaque mise à jour
+        self.view = {"query": "", "calc": None, "suggest": [], "hit": None, "results": [], "loading": False, "error": False,
+                     "apps": [], "actions": [], "files": [], "notes": [], "tasks": [], "recent": []}
+        self.file_seq = 0
+        self.icon_cache: dict[str, Gdk.Texture | None] = {}
+        self.rows: list[tuple[Gtk.ListBoxRow, str]] = []
+        self.history: list[tuple[str, str]] = self.load_history() if mode == "calc" else []
+        self.last_result: str | None = None
+        self.was_active = False
+
+    # -- cycle de vie
+
+    def do_activate(self) -> None:
+        if self.window is not None:
+            self.window.close()
+            return
+        self.load_css()
+        self.build()
+        self.window.present()
+        self.entry.grab_focus()
+
+    def load_css(self) -> None:
+        provider = Gtk.CssProvider()
+        try:
+            provider.load_from_path(str(CSS_FILE))
+            Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        except GLib.Error:
+            pass
+
+    def close(self, *_args) -> None:
+        if self.window is not None:
+            self.window.close()
+
+    # -- construction
+
+    def build(self) -> None:
+        calc = self.mode == "calc"
+        self.window = Gtk.ApplicationWindow(application=self)
+        self.window.add_css_class("ano-tool")  # exclu du verre GTK générique
+        self.window.set_title("Calculatrice" if calc else "Recherche")
+        self.window.set_default_size(560 if calc else 720, 380 if calc else 640)
+        self.window.set_resizable(False)
+        self.window.connect("close-request", self.on_close)
+        # Comme Spotlight : la fenêtre se ferme dès qu'elle perd le focus
+        self.window.connect("notify::is-active", self.on_active_changed)
+
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        root.add_css_class("spot-root")
+        root.add_css_class("calc" if calc else "search")
+        self.window.set_child(root)
+
+        bar = Gtk.Box(spacing=12)
+        bar.add_css_class("spot-bar")
+        root.append(bar)
+        icon = Gtk.Label(label="󰃬" if calc else "󰍉")
+        icon.add_css_class("spot-icon")
+        bar.append(icon)
+        self.entry = Gtk.Entry(placeholder_text="Tape un calcul…  (ex. 12,5 × 4 + 20 %)" if calc else "Apps, fichiers, notes, tâches, calculs, web…")
+        self.entry.add_css_class("spot-entry")
+        self.entry.set_hexpand(True)
+        self.entry.connect("changed", self.on_changed)
+        self.entry.connect("activate", self.on_activate_entry)
+        bar.append(self.entry)
+        self.spinner = Gtk.Spinner()
+        self.spinner.add_css_class("spot-spinner")
+        bar.append(self.spinner)
+
+        if calc:
+            self.result = Gtk.Label(label="", xalign=1)
+            self.result.add_css_class("calc-result")
+            self.result.set_selectable(True)
+            self.result.set_ellipsize(Pango.EllipsizeMode.START)
+            root.append(self.result)
+            self.hint = Gtk.Label(label="Entrée : copier le résultat  •  Échap : fermer", xalign=1)
+            self.hint.add_css_class("spot-hint")
+            root.append(self.hint)
+            sep = Gtk.Box()
+            sep.add_css_class("spot-sep")
+            root.append(sep)
+            head = Gtk.Label(label="HISTORIQUE", xalign=0)
+            head.add_css_class("section-label")
+            root.append(head)
+
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_vexpand(True)
+        root.append(scroll)
+        self.list = Gtk.ListBox()
+        self.list.add_css_class("spot-list")
+        self.list.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self.list.set_activate_on_single_click(True)
+        self.list.connect("row-activated", self.on_row_activated)
+        scroll.set_child(self.list)
+
+        if not calc:
+            self.status = Gtk.Label(label="Entrée : ouvrir  •  ↑↓ : naviguer  •  Ctrl+Entrée : Google  •  Échap : fermer")
+            self.status.add_css_class("spot-hint")
+            self.status.add_css_class("spot-footer")
+            root.append(self.status)
+            # Sans recherche : tâches du jour et fichiers récents
+            self.view.update(tasks=today_tasks(), recent=recent_files("", 6))
+            self.render()
+        else:
+            self.render_history()
+
+        keys = Gtk.EventControllerKey()
+        keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        keys.connect("key-pressed", self.on_key)
+        self.window.add_controller(keys)
+
+    # -- événements
+
+    def on_active_changed(self, window, _param) -> None:
+        # Ne se ferme sur perte de focus qu'après avoir vraiment eu le focus
+        # (sinon le relâchement de Super pendant l'ouverture la refermait aussitôt)
+        if window.is_active():
+            self.was_active = True
+        elif self.was_active:
+            GLib.timeout_add(250, self._close_if_inactive)
+
+    def _close_if_inactive(self) -> bool:
+        if self.window is not None and not self.window.is_active():
+            self.window.close()
+        return False
+
+    def on_close(self, *_args) -> bool:
+        for attr in ("debounce", "suggest_debounce"):
+            if getattr(self, attr):
+                GLib.source_remove(getattr(self, attr))
+                setattr(self, attr, 0)
+        self.window = None
+        return False
+
+    def on_key(self, _ctrl, keyval, _code, state) -> bool:
+        if keyval == Gdk.KEY_Escape:
+            self.close()
+            return True
+        if keyval in (Gdk.KEY_Down, Gdk.KEY_Up) and self.rows:
+            self.move_selection(1 if keyval == Gdk.KEY_Down else -1)
+            return True
+        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter) and state & Gdk.ModifierType.CONTROL_MASK and self.mode == "search":
+            text = self.entry.get_text().strip()
+            if text:
+                open_url("https://www.google.com/search?" + urllib.parse.urlencode({"q": text}))
+                self.close()
+            return True
+        return False
+
+    def on_changed(self, *_args) -> None:
+        if self.mode == "calc":
+            self.update_calc()
+            return
+        query = self.entry.get_text().strip()
+        self.view.update(query=query, calc=None, hit=None, results=[], error=False,
+                         apps=search_apps(query) if query else [], actions=search_actions(query) if query else [], files=[],
+                         notes=search_notes(query) if query else [],
+                         tasks=search_tasks(query) if query else today_tasks(),
+                         recent=recent_files(query, 3 if query else 6))
+        self.file_seq += 1
+        if query and len(query) >= 3:
+            seq = self.file_seq
+            threading.Thread(target=lambda: GLib.idle_add(self.show_files, query, seq, search_files(query)), daemon=True).start()
+        clock = clock_command(query) if query else None
+        if clock:
+            self.view["calc"] = "⏱  " + clock[1] + " — Entrée"
+        elif query and is_calculation(query):
+            self.view["calc"] = format_number(calculate(query))
+        elif query and convert(query):
+            self.view["calc"] = convert(query)
+        if not query:
+            self.view.update(suggest=[], loading=False)
+        for attr in ("debounce", "suggest_debounce"):
+            if getattr(self, attr):
+                GLib.source_remove(getattr(self, attr))
+                setattr(self, attr, 0)
+        if query:
+            self.suggest_debounce = GLib.timeout_add(110, self.start_suggest)
+            self.debounce = GLib.timeout_add(650, self.start_search)
+            self.view["loading"] = True
+        self.render()
+
+    def on_activate_entry(self, *_args) -> None:
+        if self.mode == "calc":
+            if self.last_result is not None:
+                expr = self.entry.get_text().strip()
+                copy_text(self.last_result.replace(" ", ""))
+                self.add_history(expr, self.last_result)
+                self.hint.set_text("Copié dans le presse-papiers ✓")
+                GLib.timeout_add(900, self.close)
+            return
+        clock = clock_command(self.entry.get_text())
+        if clock:
+            subprocess.Popen(clock[0], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.close()
+            return
+        # Entrée : si les résultats ne sont pas encore là, on les lance tout de suite ;
+        # sinon on ouvre le résultat sélectionné
+        if self.view["loading"] and self.view["query"] and not (self.view["apps"] or self.view["actions"]):
+            if self.debounce:
+                GLib.source_remove(self.debounce)
+                self.debounce = 0
+            self.start_search()
+            return
+        selected = self.list.get_selected_row()
+        row = selected or (self.rows[0][0] if self.rows else None)
+        if row is not None:
+            self.on_row_activated(self.list, row)
+
+    def on_row_activated(self, _list, row) -> None:
+        for r, action in self.rows:
+            if r is row:
+                if self.mode == "calc":
+                    self.entry.set_text(action)
+                    self.entry.set_position(-1)
+                    return
+                if action.startswith("suggest:"):
+                    # Une suggestion lance la recherche dans la fenêtre, sans navigateur
+                    self.entry.set_text(action[8:])
+                    self.entry.set_position(-1)
+                    if self.debounce:
+                        GLib.source_remove(self.debounce)
+                        self.debounce = 0
+                    self.start_search()
+                    return
+                if action.startswith("copy:"):
+                    copy_text(action[5:])
+                elif action.startswith("app:"):
+                    info = Gio.DesktopAppInfo.new(action[4:])
+                    if info is not None and info.get_filename():
+                        subprocess.Popen(["gio", "launch", info.get_filename()], start_new_session=True,
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                elif action.startswith("cmd:"):
+                    subprocess.Popen(json.loads(action[4:]), start_new_session=True,
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                elif action.startswith("note:"):
+                    # La note s'ouvre dans les Notes rapides (Super + Maj + N)
+                    subprocess.Popen(["sh", "-c", 'qs -c ano-shell ipc call notes select "$1"; hyprctl dispatch \'hl.dsp.global("ano-shell:quicknotes")\'', "sh", action[5:]],
+                                     start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                elif action.startswith("task:"):
+                    subprocess.Popen(["hyprctl", "dispatch", 'hl.dsp.global("ano-shell:quicktasks")'],
+                                     start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                elif action.startswith("file:"):
+                    subprocess.Popen(["xdg-open", action[5:]], start_new_session=True,
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    open_url(action)
+                self.close()
+                return
+
+    def move_selection(self, step: int) -> None:
+        current = self.list.get_selected_row()
+        idx = current.get_index() + step if current else (0 if step > 0 else len(self.rows) - 1)
+        idx = max(0, min(len(self.rows) - 1, idx))
+        row = self.rows[idx][0]
+        self.list.select_row(row)
+        row.grab_focus()
+        self.entry.grab_focus_without_selecting()
+
+    # -- calculatrice
+
+    def update_calc(self) -> None:
+        text = self.entry.get_text()
+        value = calculate(text) if text.strip() else None
+        if value is None:
+            self.last_result = None
+            self.result.set_text("" if not text.strip() else "…")
+            self.result.remove_css_class("has-result")
+        else:
+            self.last_result = format_number(value)
+            self.result.set_text("= " + self.last_result)
+            self.result.add_css_class("has-result")
+
+    def load_history(self) -> list[tuple[str, str]]:
+        try:
+            return [tuple(x) for x in json.loads(HISTORY_FILE.read_text())][:MAX_HISTORY]
+        except (OSError, ValueError, TypeError):
+            return []
+
+    def add_history(self, expr: str, result: str) -> None:
+        self.history = [(expr, result)] + [h for h in self.history if h[0] != expr]
+        self.history = self.history[:MAX_HISTORY]
+        try:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            HISTORY_FILE.write_text(json.dumps(self.history, ensure_ascii=False))
+        except OSError:
+            pass
+
+    def render_history(self) -> None:
+        self.clear_list()
+        if not self.history:
+            self.show_placeholder("Tes derniers calculs apparaîtront ici.")
+            return
+        for expr, result in self.history:
+            row = Gtk.ListBoxRow()
+            box = Gtk.Box(spacing=12)
+            box.add_css_class("history-row")
+            left = Gtk.Label(label=expr, xalign=0)
+            left.set_hexpand(True)
+            left.set_ellipsize(Pango.EllipsizeMode.END)
+            left.add_css_class("history-expr")
+            right = Gtk.Label(label="= " + result, xalign=1)
+            right.add_css_class("history-result")
+            box.append(left)
+            box.append(right)
+            row.set_child(box)
+            self.list.append(row)
+            self.rows.append((row, expr))
+
+    # -- recherche
+
+    def start_suggest(self) -> bool:
+        self.suggest_debounce = 0
+        query = self.view["query"]
+        self.suggest_seq += 1
+        seq = self.suggest_seq
+
+        def work():
+            try:
+                items = suggestions(query)
+            except Exception:
+                items = []
+            GLib.idle_add(self.got_suggestions, query, seq, items)
+
+        threading.Thread(target=work, daemon=True).start()
+        return False
+
+    def got_suggestions(self, query, seq, items) -> bool:
+        if seq == self.suggest_seq and query == self.view["query"] and self.window is not None:
+            self.view["suggest"] = items
+            self.render()
+        return False
+
+    def start_search(self) -> bool:
+        self.debounce = 0
+        query = self.view["query"]
+        if not query:
+            return False
+        self.query_seq += 1
+        seq = self.query_seq
+        self.view["loading"] = True
+        self.spinner.start()
+        threading.Thread(target=self.search_worker, args=(query, seq), daemon=True).start()
+        return False
+
+    def search_worker(self, query: str, seq: int) -> None:
+        results: list[WebResult] = []
+        error = False
+        hit_holder: list[TopHit | None] = [None]
+        wiki = threading.Thread(target=lambda: hit_holder.__setitem__(0, top_hit(query)), daemon=True)
+        wiki.start()
+        try:
+            results = web_search(query)
+        except Exception:
+            error = True
+        wiki.join(timeout=TIMEOUT)
+        GLib.idle_add(self.show_results, query, seq, results, hit_holder[0], error)
+
+    def show_files(self, query: str, seq: int, files: list[str]) -> bool:
+        if seq != self.file_seq or self.window is None or query != self.view["query"]:
+            return False
+        self.view["files"] = files
+        self.render()
+        return False
+
+    def show_results(self, query: str, seq: int, results, hit, error) -> bool:
+        if seq != self.query_seq or self.window is None or query != self.view["query"]:
+            return False
+        self.view.update(results=results, hit=hit, error=error and not results, loading=False)
+        self.render()
+        self.load_icons(results)
+        return False
+
+    # -- icônes des sites
+
+    def load_icons(self, results) -> None:
+        todo = [r.icon_url for r in results if r.icon_url not in self.icon_cache]
+        if not todo:
+            return
+
+        def work(url):
+            data = fetch_icon(url)
+            GLib.idle_add(self.got_icon, url, data)
+
+        for url in todo:
+            self.icon_cache[url] = None
+            threading.Thread(target=work, args=(url,), daemon=True).start()
+
+    def got_icon(self, url, data) -> bool:
+        if data:
+            try:
+                self.icon_cache[url] = Gdk.Texture.new_from_bytes(GLib.Bytes.new(data))
+            except GLib.Error:
+                return False
+            for image, icon_url in getattr(self, "icon_widgets", []):
+                if icon_url == url:
+                    image.set_from_paintable(self.icon_cache[url])
+        return False
+
+    # -- rendu de la liste
+
+    def render(self) -> None:
+        v = self.view
+        self.clear_list()
+        self.icon_widgets = []
+        if v["loading"]:
+            self.spinner.start()
+        else:
+            self.spinner.stop()
+        if not v["query"]:
+            # Sans recherche : tâches du jour et fichiers récents, prêts à ouvrir
+            if not v["tasks"] and not v["recent"]:
+                self.show_placeholder("Tape ta recherche : applis, fichiers, notes, tâches, calculs et web.")
+                return
+            if v["tasks"]:
+                self.add_section("AUJOURD'HUI")
+                for t in v["tasks"]:
+                    self.add_task(t)
+            if v["recent"]:
+                self.add_section("RÉCENTS")
+                for path in v["recent"]:
+                    self.add_file(path, recent=True)
+            self.list.select_row(self.rows[0][0])
+            return
+        apps = v["apps"]
+        if apps:
+            self.add_top_app(apps[0])
+            for a in apps[1:4]:
+                self.add_app(a)
+        for title, icon, cmd in v["actions"]:
+            self.add_card(icon, title, "Action", "cmd:" + json.dumps(cmd))
+        if v["calc"]:
+            self.add_card("󰃬", f"= {v['calc']}", "Calcul  •  Entrée pour copier", f"copy:{v['calc'].replace(chr(0x202f), '')}", big=True)
+        if v["notes"]:
+            self.add_section("NOTES")
+            for n in v["notes"]:
+                self.add_note(n)
+        if v["tasks"]:
+            self.add_section("TÂCHES")
+            for t in v["tasks"]:
+                self.add_task(t)
+        files = v["recent"] + [f for f in v["files"] if f not in v["recent"]]
+        if files:
+            self.add_section("FICHIERS")
+            for path in files[:6]:
+                self.add_file(path, recent=path in v["recent"])
+        if v["hit"] is not None:
+            self.add_top_hit(v["hit"])
+        # Quand les résultats sont là, on garde seulement 3 suggestions pour leur laisser la place
+        for text in v["suggest"][:3] if v["results"] else v["suggest"]:
+            self.add_suggestion(text)
+        if v["results"]:
+            self.add_section("RÉSULTATS WEB")
+        for r in v["results"]:
+            self.add_result(r)
+        if v["error"]:
+            self.add_card("󰖪", "Résultats indisponibles pour le moment", "Les moteurs ne répondent pas — Entrée ouvre la recherche Google.",
+                          "https://www.google.com/search?" + urllib.parse.urlencode({"q": v["query"]}))
+        elif v["loading"] and not v["results"]:
+            label = Gtk.Label(label="Recherche en cours…")
+            label.add_css_class("spot-placeholder")
+            row = Gtk.ListBoxRow(selectable=False, activatable=False)
+            row.set_child(label)
+            self.list.append(row)
+        self.add_card("󰊭", f"Rechercher « {v['query']} » sur Google", "Ouvre le navigateur",
+                      "https://www.google.com/search?" + urllib.parse.urlencode({"q": v["query"]}))
+        if self.rows:
+            if apps or v["actions"]:
+                first = self.rows[0][0]
+            else:
+                first = next((r for r, a in self.rows if not a.startswith("suggest:")), self.rows[0][0]) if v["results"] or v["hit"] else self.rows[0][0]
+            self.list.select_row(first)
+
+    def clear_list(self) -> None:
+        child = self.list.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            self.list.remove(child)
+            child = nxt
+        self.rows = []
+
+    def show_placeholder(self, text: str) -> None:
+        self.clear_list()
+        label = Gtk.Label(label=text)
+        label.add_css_class("spot-placeholder")
+        row = Gtk.ListBoxRow(selectable=False, activatable=False)
+        row.set_child(label)
+        self.list.append(row)
+
+    def _append(self, widget: Gtk.Widget, action: str, css: str) -> None:
+        row = Gtk.ListBoxRow()
+        row.add_css_class(css)
+        row.set_child(widget)
+        self.list.append(row)
+        self.rows.append((row, action))
+
+    def add_section(self, text: str) -> None:
+        head = Gtk.Label(label=text, xalign=0)
+        head.add_css_class("section-label")
+        row = Gtk.ListBoxRow(selectable=False, activatable=False)
+        row.set_child(head)
+        self.list.append(row)
+
+    def add_top_app(self, app) -> None:
+        box = Gtk.Box(spacing=16)
+        box.add_css_class("top-app")
+        icon = Gtk.Image.new_from_gicon(app.get_icon()) if app.get_icon() else Gtk.Image.new_from_icon_name("application-x-executable")
+        icon.set_pixel_size(56)
+        box.append(icon)
+        texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3, valign=Gtk.Align.CENTER)
+        t = Gtk.Label(label=app.get_display_name(), xalign=0)
+        t.add_css_class("top-app-title")
+        t.set_ellipsize(Pango.EllipsizeMode.END)
+        texts.append(t)
+        sub = Gtk.Label(label=app.get_description() or app.get_generic_name() or "Application", xalign=0)
+        sub.add_css_class("row-domain")
+        sub.set_ellipsize(Pango.EllipsizeMode.END)
+        texts.append(sub)
+        box.append(texts)
+        hint = Gtk.Label(label="Entrée : ouvrir", hexpand=True, xalign=1)
+        hint.add_css_class("top-app-hint")
+        box.append(hint)
+        self._append(box, "app:" + app.get_id(), "top-app-row")
+
+    def add_app(self, app) -> None:
+        box = Gtk.Box(spacing=12)
+        box.add_css_class("card-row")
+        icon = Gtk.Image.new_from_gicon(app.get_icon()) if app.get_icon() else Gtk.Image.new_from_icon_name("application-x-executable")
+        icon.set_pixel_size(28)
+        box.append(icon)
+        t = Gtk.Label(label=app.get_display_name(), xalign=0)
+        t.add_css_class("row-title")
+        t.set_ellipsize(Pango.EllipsizeMode.END)
+        box.append(t)
+        sub = Gtk.Label(label="Application", hexpand=True, xalign=1)
+        sub.add_css_class("row-domain")
+        box.append(sub)
+        self._append(box, "app:" + app.get_id(), "card")
+
+    def add_note(self, note: dict) -> None:
+        box = Gtk.Box(spacing=12)
+        box.add_css_class("card-row")
+        ic = Gtk.Label(label="󰎞")
+        ic.add_css_class("row-icon")
+        ic.add_css_class("note-icon")
+        box.append(ic)
+        texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1, hexpand=True)
+        t = Gtk.Label(label=note["title"], xalign=0)
+        t.add_css_class("row-title")
+        t.set_ellipsize(Pango.EllipsizeMode.END)
+        texts.append(t)
+        if note["snippet"]:
+            sub = Gtk.Label(label=note["snippet"], xalign=0)
+            sub.add_css_class("row-domain")
+            sub.set_ellipsize(Pango.EllipsizeMode.END)
+            texts.append(sub)
+        box.append(texts)
+        tag = Gtk.Label(label="Note")
+        tag.add_css_class("row-domain")
+        box.append(tag)
+        self._append(box, "note:" + str(note["id"]), "card")
+
+    def add_task(self, task: dict) -> None:
+        box = Gtk.Box(spacing=12)
+        box.add_css_class("card-row")
+        ic = Gtk.Label(label="󰄲" if task["done"] else "󰄱")
+        ic.add_css_class("row-icon")
+        ic.add_css_class(f"task-{task['priority']}")
+        box.append(ic)
+        texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1, hexpand=True)
+        t = Gtk.Label(label=task["title"], xalign=0)
+        t.add_css_class("row-title")
+        if task["done"]:
+            t.add_css_class("task-done")
+        t.set_ellipsize(Pango.EllipsizeMode.END)
+        texts.append(t)
+        bits = [PRIORITY_FR.get(task["priority"], "")] + ([task["due"]] if task["due"] else [])
+        sub = Gtk.Label(label="  ·  ".join(b for b in bits if b), xalign=0)
+        sub.add_css_class("row-domain")
+        if task["due"].startswith("En retard"):
+            sub.add_css_class("task-late")
+        texts.append(sub)
+        box.append(texts)
+        tag = Gtk.Label(label="Tâche")
+        tag.add_css_class("row-domain")
+        box.append(tag)
+        self._append(box, "task:" + str(task["id"]), "card")
+
+    def add_file(self, path: str, recent: bool = False) -> None:
+        box = Gtk.Box(spacing=12)
+        box.add_css_class("card-row")
+        is_dir = os.path.isdir(path)
+        ctype = "inode/directory" if is_dir else Gio.content_type_guess(path, None)[0]
+        icon = Gtk.Image.new_from_gicon(Gio.content_type_get_icon(ctype))
+        icon.set_pixel_size(26)
+        box.append(icon)
+        texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        name = Gtk.Label(label=os.path.basename(path.rstrip("/")), xalign=0)
+        name.add_css_class("row-title")
+        name.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+        texts.append(name)
+        where = Gtk.Label(label=os.path.dirname(path.rstrip("/")).replace(HOME, "~", 1), xalign=0)
+        where.add_css_class("row-domain")
+        where.set_ellipsize(Pango.EllipsizeMode.START)
+        texts.append(where)
+        box.append(texts)
+        if recent:
+            tag = Gtk.Label(label="Récent", hexpand=True, xalign=1)
+            tag.add_css_class("row-domain")
+            box.append(tag)
+        self._append(box, "file:" + path, "card")
+
+    def add_suggestion(self, text: str) -> None:
+        box = Gtk.Box(spacing=12)
+        box.add_css_class("suggest-row")
+        ic = Gtk.Label(label="󰍉")
+        ic.add_css_class("suggest-icon")
+        box.append(ic)
+        label = Gtk.Label(label=text, xalign=0)
+        label.add_css_class("suggest-text")
+        label.set_ellipsize(Pango.EllipsizeMode.END)
+        box.append(label)
+        self._append(box, "suggest:" + text, "suggest")
+
+    def add_card(self, icon: str, title: str, subtitle: str, action: str, big: bool = False) -> None:
+        box = Gtk.Box(spacing=14)
+        box.add_css_class("card-row")
+        ic = Gtk.Label(label=icon)
+        ic.add_css_class("row-icon")
+        box.append(ic)
+        texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        t = Gtk.Label(label=title, xalign=0)
+        t.add_css_class("calc-inline" if big else "row-title")
+        t.set_ellipsize(Pango.EllipsizeMode.END)
+        sub = Gtk.Label(label=subtitle, xalign=0)
+        sub.add_css_class("row-domain")
+        texts.append(t)
+        texts.append(sub)
+        box.append(texts)
+        self._append(box, action, "card")
+
+    def add_top_hit(self, hit: TopHit) -> None:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.add_css_class("tophit")
+        head = Gtk.Box(spacing=8)
+        badge = Gtk.Label(label=hit.source.upper())
+        badge.add_css_class("badge")
+        head.append(badge)
+        title = Gtk.Label(label=hit.title, xalign=0)
+        title.add_css_class("tophit-title")
+        title.set_ellipsize(Pango.EllipsizeMode.END)
+        head.append(title)
+        box.append(head)
+        text = Gtk.Label(label=hit.text, xalign=0)
+        text.add_css_class("tophit-text")
+        text.set_wrap(True)
+        text.set_lines(3)
+        text.set_ellipsize(Pango.EllipsizeMode.END)
+        box.append(text)
+        self._append(box, hit.url or "https://fr.wikipedia.org", "tophit-row")
+
+    def add_result(self, r: WebResult) -> None:
+        outer = Gtk.Box(spacing=12)
+        outer.add_css_class("result-row")
+        image = Gtk.Image()
+        image.set_pixel_size(20)
+        image.add_css_class("favicon")
+        image.set_valign(Gtk.Align.START)
+        cached = self.icon_cache.get(r.icon_url)
+        if cached is not None:
+            image.set_from_paintable(cached)
+        else:
+            image.set_from_icon_name("web-browser-symbolic")
+        self.icon_widgets.append((image, r.icon_url))
+        outer.append(image)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        box.set_hexpand(True)
+        domain = Gtk.Label(label=r.domain, xalign=0)
+        domain.add_css_class("row-domain")
+        title = Gtk.Label(label=r.title, xalign=0)
+        title.add_css_class("row-title")
+        title.set_ellipsize(Pango.EllipsizeMode.END)
+        box.append(domain)
+        box.append(title)
+        if r.snippet:
+            snip = Gtk.Label(label=r.snippet, xalign=0)
+            snip.add_css_class("row-snippet")
+            snip.set_wrap(True)
+            snip.set_lines(2)
+            snip.set_ellipsize(Pango.EllipsizeMode.END)
+            box.append(snip)
+        outer.append(box)
+        self._append(outer, r.url, "result")
+
+
+
+# ---------------------------------------------------------------- calculatrice (Super + O)
+
+KEYPAD = [
+    [("√", "√(", "fn"), ("x²", "^2", "fn"), ("π", "π", "fn"), ("%", "%", "fn")],
+    [("AC", "clear", "fn"), ("(", "(", "fn"), (")", ")", "fn"), ("÷", "÷", "op")],
+    [("7", "7", "num"), ("8", "8", "num"), ("9", "9", "num"), ("×", "×", "op")],
+    [("4", "4", "num"), ("5", "5", "num"), ("6", "6", "num"), ("−", "−", "op")],
+    [("1", "1", "num"), ("2", "2", "num"), ("3", "3", "num"), ("+", "+", "op")],
+    [("⌫", "back", "fn"), ("0", "0", "num"), (",", ",", "num"), ("=", "equals", "eq")],
+]
+# Caractère tapé au clavier → touche à éclairer à l'écran
+KEY_ALIASES = {"*": "×", "x": "×", "/": "÷", "-": "−", ".": ",", "^": "x²"}
+
+# Seuls les caractères d'un vrai calcul sont acceptés dans la calculatrice ;
+# certains sont convertis en jolis symboles au passage
+CALC_MAP = {"*": "×", "x": "×", "X": "×", "/": "÷", "-": "−", ".": ",", "p": "π", "P": "π"}
+CALC_ALLOWED = set("0123456789+−×÷^%(),π√! ")
+
+
+def filter_calc_input(text: str) -> str:
+    return "".join(c for c in (CALC_MAP.get(ch, ch) for ch in text) if c in CALC_ALLOWED)
+
+
+class Calculator(Gtk.Application):
+    def __init__(self) -> None:
+        super().__init__(application_id="io.caelestia.Calc", flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+        self.window: Gtk.ApplicationWindow | None = None
+        self.history: list[tuple[str, str]] = self.load_history()
+        self.result_text: str | None = None
+        self.raw_value: float | None = None
+        self.keys: dict[str, Gtk.Button] = {}
+        self.hint_timer = 0
+        if self.history:
+            last = calculate(self.history[0][1])
+            if last is not None:
+                CONSTANTS["ans"] = last
+
+    # -- cycle de vie
+
+    def do_activate(self) -> None:
+        if self.window is not None:
+            self.window.close()
+            return
+        provider = Gtk.CssProvider()
+        try:
+            provider.load_from_path(str(CSS_FILE))
+            Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        except GLib.Error:
+            pass
+        self.build()
+        self.window.present()
+        self.entry.grab_focus()
+
+    def build(self) -> None:
+        self.window = Gtk.ApplicationWindow(application=self)
+        self.window.add_css_class("ano-tool")  # exclu du verre GTK générique
+        self.window.set_title("Calculatrice")
+        self.window.set_default_size(380, 640)
+        self.window.set_resizable(False)
+        self.window.connect("close-request", self.on_close)
+
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        root.add_css_class("calc-root")
+        self.window.set_child(root)
+
+        # En-tête : titre discret + bouton historique
+        head = Gtk.Box(spacing=8)
+        head.add_css_class("calc-head")
+        title = Gtk.Label(label="Calculatrice", xalign=0)
+        title.add_css_class("calc-title")
+        title.set_hexpand(True)
+        head.append(title)
+        self.history_btn = Gtk.ToggleButton(label="󰋚")
+        self.history_btn.add_css_class("calc-iconbtn")
+        self.history_btn.set_tooltip_text("Historique")
+        self.history_btn.connect("toggled", lambda b: self.history_rev.set_reveal_child(b.get_active()))
+        head.append(self.history_btn)
+        root.append(head)
+
+        # Écran : calcul en haut, grand résultat dessous
+        display = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        display.add_css_class("calc-display")
+        self.entry = Gtk.Entry(placeholder_text="0")
+        self.entry.add_css_class("calc-expr")
+        self.entry.set_alignment(1.0)
+        # Filtre la saisie (frappe et collage) : chiffres et opérateurs uniquement
+        self.changed_handler = self.entry.connect("changed", self.on_changed)
+        self.entry.connect("activate", lambda *_: self.commit())
+        display.append(self.entry)
+
+        self.result_stack = Gtk.Stack()
+        self.result_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self.result_stack.set_transition_duration(160)
+        self.result_labels = []
+        for name in ("a", "b"):
+            label = Gtk.Label(label="0", xalign=1)
+            label.add_css_class("calc-big")
+            label.set_ellipsize(Pango.EllipsizeMode.START)
+            label.set_selectable(True)
+            self.result_stack.add_named(label, name)
+            self.result_labels.append(label)
+        self.result_stack.set_visible_child_name("a")
+        display.append(self.result_stack)
+
+        self.hint = Gtk.Label(label="Entrée : résultat + copier  •  Échap : effacer", xalign=1)
+        self.hint.add_css_class("calc-hint")
+        display.append(self.hint)
+        root.append(display)
+
+        # Historique repliable
+        self.history_rev = Gtk.Revealer()
+        self.history_rev.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        self.history_rev.set_transition_duration(220)
+        hist_scroll = Gtk.ScrolledWindow()
+        hist_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        hist_scroll.set_min_content_height(150)
+        hist_scroll.set_max_content_height(150)
+        self.history_list = Gtk.ListBox()
+        self.history_list.add_css_class("calc-history")
+        self.history_list.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.history_list.set_activate_on_single_click(True)
+        self.history_list.connect("row-activated", self.on_history_row)
+        hist_scroll.set_child(self.history_list)
+        self.history_rev.set_child(hist_scroll)
+        root.append(self.history_rev)
+        self.render_history()
+
+        # Pavé de touches
+        grid = Gtk.Grid(row_spacing=9, column_spacing=9, row_homogeneous=True, column_homogeneous=True)
+        grid.add_css_class("calc-keypad")
+        grid.set_vexpand(True)
+        for r, row in enumerate(KEYPAD):
+            for c, (label, action, kind) in enumerate(row):
+                btn = Gtk.Button(label=label)
+                btn.add_css_class("key")
+                btn.add_css_class(f"key-{kind}")
+                btn.set_focusable(False)
+                btn.connect("clicked", self.on_key_button, action)
+                grid.attach(btn, c, r, 1, 1)
+                self.keys[label] = btn
+        root.append(grid)
+
+        keys = Gtk.EventControllerKey()
+        keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        keys.connect("key-pressed", self.on_key)
+        self.window.add_controller(keys)
+        self.update()
+
+    def on_close(self, *_args) -> bool:
+        self.window = None
+        return False
+
+    # -- saisie
+
+    def insert(self, text: str) -> None:
+        pos = self.entry.get_position()
+        self.entry.insert_text(text, pos)
+        self.entry.set_position(pos + len(text))
+        self.entry.grab_focus_without_selecting()
+
+    def on_key_button(self, _btn, action: str) -> None:
+        if action == "clear":
+            self.entry.set_text("")
+        elif action == "back":
+            pos = self.entry.get_position()
+            if pos > 0:
+                self.entry.delete_text(pos - 1, pos)
+        elif action == "equals":
+            self.commit()
+        else:
+            self.insert(action)
+        self.entry.grab_focus_without_selecting()
+
+    def flash(self, label: str) -> None:
+        """Éclaire la touche de l'écran correspondant à la touche tapée."""
+        btn = self.keys.get(label)
+        if btn is None:
+            return
+        btn.add_css_class("pressed")
+        GLib.timeout_add(140, lambda: (btn.remove_css_class("pressed"), False)[1])
+
+    def on_key(self, _ctrl, keyval, _code, state) -> bool:
+        ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
+        if keyval == Gdk.KEY_Escape:
+            if self.entry.get_text():
+                self.entry.set_text("")
+                self.flash("AC")
+            else:
+                self.window.close()
+            return True
+        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter, Gdk.KEY_equal) and not ctrl:
+            self.flash("=")
+            self.commit()
+            return True
+        if ctrl and keyval in (Gdk.KEY_c, Gdk.KEY_C) and not self.entry.get_selection_bounds():
+            self.copy_result()
+            return True
+        if keyval == Gdk.KEY_BackSpace:
+            self.flash("⌫")
+            return False
+        char = chr(Gdk.keyval_to_unicode(keyval)) if Gdk.keyval_to_unicode(keyval) else ""
+        if char:
+            self.flash(KEY_ALIASES.get(char, char))
+        return False
+
+    # -- calcul
+
+    def evaluate(self, text: str) -> tuple[str | None, float | None]:
+        if not text.strip():
+            return None, None
+        conv = convert(text)
+        if conv is not None:
+            return conv, None
+        value = calculate(text)
+        if value is None:
+            return None, None
+        return format_number(value), value
+
+    def on_changed(self, *_args) -> None:
+        text = self.entry.get_text()
+        if filter_calc_input(text) != text:
+            # Correction juste après la frappe (GTK refuse de modifier le texte pendant)
+            if not getattr(self, "filter_pending", False):
+                self.filter_pending = True
+                GLib.idle_add(self.apply_filter)
+            return
+        self.update()
+
+    def apply_filter(self) -> bool:
+        self.filter_pending = False
+        if self.window is None:
+            return False
+        text = self.entry.get_text()
+        clean = filter_calc_input(text)
+        if clean != text:
+            pos = self.entry.get_position()
+            before = len(filter_calc_input(text[:pos]))
+            self.entry.handler_block(self.changed_handler)
+            self.entry.set_text(clean)
+            self.entry.handler_unblock(self.changed_handler)
+            self.entry.set_position(before)
+            if any(ch.isalpha() and ch not in "xXpP" for ch in text) or not clean:
+                self.hint.add_css_class("error")
+                self.show_hint("Seulement des chiffres et des opérateurs")
+        self.update()
+        return False
+
+    def update(self) -> None:
+        text = self.entry.get_text()
+        result, value = self.evaluate(text)
+        self.result_text, self.raw_value = result, value
+        shown = result if result is not None else ("0" if not text.strip() else None)
+        if shown is None:
+            # Calcul incomplet : on garde le dernier résultat, estompé
+            for label in self.result_labels:
+                label.add_css_class("dim")
+            return
+        current = self.result_stack.get_visible_child()
+        if current.get_label() != shown:
+            other = self.result_labels[1] if current is self.result_labels[0] else self.result_labels[0]
+            other.set_label(shown)
+            self.size_class(other, shown)
+            other.remove_css_class("dim")
+            self.result_stack.set_visible_child(other)
+        for label in self.result_labels:
+            label.remove_css_class("dim")
+            if not text.strip():
+                label.add_css_class("dim")
+
+    @staticmethod
+    def size_class(label: Gtk.Label, text: str) -> None:
+        for cls in ("big-m", "big-s", "big-xs"):
+            label.remove_css_class(cls)
+        n = len(text)
+        if n > 16:
+            label.add_css_class("big-xs")
+        elif n > 11:
+            label.add_css_class("big-s")
+        elif n > 8:
+            label.add_css_class("big-m")
+
+    def copy_result(self) -> None:
+        if self.result_text is None:
+            return
+        copy_text(self.result_text.replace(" ", ""))
+        self.show_hint("Copié dans le presse-papiers ✓")
+
+    def commit(self) -> None:
+        text = self.entry.get_text().strip()
+        if self.result_text is None or not text:
+            self.hint.add_css_class("error")
+            self.show_hint("Calcul incomplet")
+            return
+        self.hint.remove_css_class("error")
+        self.copy_result()
+        self.add_history(text, self.result_text)
+        if self.raw_value is not None:
+            CONSTANTS["ans"] = self.raw_value
+            # Le résultat devient le nouveau calcul, pour enchaîner
+            self.entry.set_text(self.result_text.replace(" ", ""))
+            self.entry.set_position(-1)
+        for label in self.result_labels:
+            label.add_css_class("pop")
+        GLib.timeout_add(260, lambda: ([l.remove_css_class("pop") for l in self.result_labels], False)[1])
+
+    def show_hint(self, text: str) -> None:
+        self.hint.set_label(text)
+        if self.hint_timer:
+            GLib.source_remove(self.hint_timer)
+
+        def reset():
+            self.hint_timer = 0
+            if self.window is not None:
+                self.hint.remove_css_class("error")
+                self.hint.set_label("Entrée : résultat + copier  •  Échap : effacer")
+            return False
+
+        self.hint_timer = GLib.timeout_add(1600, reset)
+
+    # -- historique
+
+    def load_history(self) -> list[tuple[str, str]]:
+        try:
+            return [tuple(x) for x in json.loads(HISTORY_FILE.read_text())][:12]
+        except (OSError, ValueError, TypeError):
+            return []
+
+    def add_history(self, expr: str, result: str) -> None:
+        self.history = [(expr, result)] + [h for h in self.history if h[0] != expr]
+        self.history = self.history[:12]
+        try:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            HISTORY_FILE.write_text(json.dumps(self.history, ensure_ascii=False))
+        except OSError:
+            pass
+        self.render_history()
+
+    def render_history(self) -> None:
+        child = self.history_list.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            self.history_list.remove(child)
+            child = nxt
+        if not self.history:
+            empty = Gtk.Label(label="Aucun calcul pour l'instant")
+            empty.add_css_class("calc-hist-empty")
+            row = Gtk.ListBoxRow(activatable=False)
+            row.set_child(empty)
+            self.history_list.append(row)
+            return
+        for expr, result in self.history:
+            row = Gtk.ListBoxRow()
+            row.result = result
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+            box.add_css_class("calc-hist-row")
+            e = Gtk.Label(label=expr, xalign=1)
+            e.add_css_class("calc-hist-expr")
+            e.set_ellipsize(Pango.EllipsizeMode.START)
+            r = Gtk.Label(label="= " + result, xalign=1)
+            r.add_css_class("calc-hist-result")
+            r.set_ellipsize(Pango.EllipsizeMode.START)
+            box.append(e)
+            box.append(r)
+            row.set_child(box)
+            row.set_tooltip_text("Cliquer pour insérer ce résultat")
+            self.history_list.append(row)
+
+    def on_history_row(self, _list, row) -> None:
+        result = getattr(row, "result", None)
+        if result:
+            # Seulement le nombre (sans l'unité d'une conversion)
+            self.insert(result.split(" ")[0].replace("\u202f", ""))
+
+
+# ---------------------------------------------------------------- mode serveur (Spotlight du shell)
+
+def run_action(action: str) -> None:
+    """Exécute l'action d'un résultat (même logique que la fenêtre GTK)."""
+    quiet = {"start_new_session": True, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    if action.startswith("copy:"):
+        copy_text(action[5:])
+    elif action.startswith("app:"):
+        info = Gio.DesktopAppInfo.new(action[4:])
+        if info is not None and info.get_filename():
+            subprocess.Popen(["gio", "launch", info.get_filename()], **quiet)
+    elif action.startswith("cmd:"):
+        subprocess.Popen(json.loads(action[4:]), **quiet)
+    elif action.startswith("note:"):
+        subprocess.Popen(["sh", "-c", 'qs -c ano-shell ipc call notes select "$1"; hyprctl dispatch \'hl.dsp.global("ano-shell:quicknotes")\'', "sh", action[5:]], **quiet)
+    elif action.startswith("task:"):
+        subprocess.Popen(["hyprctl", "dispatch", 'hl.dsp.global("ano-shell:quicktasks")'], **quiet)
+    elif action.startswith("file:"):
+        subprocess.Popen(["xdg-open", action[5:]], **quiet)
+    elif action:
+        open_url(action)
+
+
+def _icon_name(gicon) -> str:
+    if gicon is None:
+        return ""
+    if isinstance(gicon, Gio.ThemedIcon):
+        names = gicon.get_names()
+        return names[0] if names else ""
+    if isinstance(gicon, Gio.FileIcon):
+        return gicon.get_file().get_path() or ""
+    return gicon.to_string() or ""
+
+
+def _file_item(path: str, recent: bool) -> dict:
+    is_dir = os.path.isdir(path)
+    ctype = "inode/directory" if is_dir else Gio.content_type_guess(path, None)[0]
+    return {"kind": "file", "section": "Fichiers", "title": os.path.basename(path.rstrip("/")),
+            "sub": os.path.dirname(path.rstrip("/")).replace(HOME, "~", 1), "tag": "Récent" if recent else "",
+            "icon": _icon_name(Gio.content_type_get_icon(ctype)), "fallback": "folder" if is_dir else "text-x-generic",
+            "action": "file:" + path}
+
+
+def _task_item(t: dict, section: str) -> dict:
+    return {"kind": "task", "section": section, "title": t["title"], "sub": t["due"] or PRIORITY_FR.get(t["priority"], ""),
+            "done": t["done"], "late": t["due"].startswith("En retard"), "priority": t["priority"],
+            "glyph": "󰄵" if t["done"] else "󰄱", "action": "task:" + str(t["id"])}
+
+
+def local_items(query: str) -> list[dict]:
+    items: list[dict] = []
+    if not query:
+        for t in today_tasks():
+            items.append(_task_item(t, "Aujourd'hui"))
+        for path in recent_files("", 6):
+            items.append(_file_item(path, True))
+        return items
+    apps = search_apps(query)
+    for i, a in enumerate(apps[:4]):
+        items.append({"kind": "app", "section": "Meilleur résultat" if i == 0 else "Applications",
+                      "title": a.get_display_name() or a.get_name() or "", "sub": a.get_description() or a.get_generic_name() or "Application",
+                      "icon": _icon_name(a.get_icon()), "fallback": "application-x-executable", "top": i == 0,
+                      "action": "app:" + (a.get_id() or "")})
+    for title, icon, cmd in search_actions(query):
+        items.append({"kind": "action", "section": "Actions", "title": title, "sub": "Action", "glyph": icon, "action": "cmd:" + json.dumps(cmd)})
+    clock = clock_command(query)
+    if clock:
+        items.append({"kind": "calc", "section": "Horloge", "title": clock[1], "sub": "Entrée pour lancer", "glyph": "󰔛", "action": "cmd:" + json.dumps(clock[0])})
+    else:
+        value = None
+        if is_calculation(query):
+            v = calculate(query)
+            value = format_number(v) if v is not None else None
+        elif convert(query):
+            value = convert(query)
+        if value:
+            items.append({"kind": "calc", "section": "Calcul", "title": "= " + value, "sub": "Entrée pour copier", "glyph": "󰃬",
+                          "action": "copy:" + value.replace(chr(0x202f), "").replace(" ", "")})
+    for n in search_notes(query):
+        items.append({"kind": "note", "section": "Notes", "title": n["title"], "sub": n["snippet"], "glyph": "󰎞", "action": "note:" + str(n["id"])})
+    for t in search_tasks(query):
+        items.append(_task_item(t, "Tâches"))
+    for path in recent_files(query, 3):
+        items.append(_file_item(path, True))
+    return items
+
+
+def serve() -> int:
+    """Protocole en lignes JSON sur stdin/stdout, utilisé par le Spotlight du shell :
+    entrée {"seq": n, "q": "…"} ou {"run": "action"} ; sortie {"seq": n, "stage": …, "items": […]}."""
+    lock = threading.Lock()
+    state = {"seq": 0}
+
+    def send(seq: int, stage: str, items: list[dict], **extra) -> None:
+        if seq != state["seq"]:
+            return
+        with lock:
+            sys.stdout.write(json.dumps({"seq": seq, "stage": stage, "items": items, **extra}, ensure_ascii=False) + "\n")
+            sys.stdout.flush()
+
+    def slow(seq: int, query: str) -> None:
+        import time
+        if len(query) >= 3:
+            recent = set(recent_files(query, 3))
+            send(seq, "files", [_file_item(f, False) for f in search_files(query) if f not in recent])
+        time.sleep(0.11)
+        if seq != state["seq"]:
+            return
+        try:
+            send(seq, "suggest", [{"kind": "suggest", "section": "Suggestions", "title": t, "glyph": "󰍉", "action": "suggest:" + t}
+                                  for t in suggestions(query)[:4] if t.strip().lower() != query.lower()])
+        except Exception:
+            send(seq, "suggest", [])
+        time.sleep(0.5)
+        if seq != state["seq"]:
+            return
+        hit_holder: list[TopHit | None] = [None]
+        wiki = threading.Thread(target=lambda: hit_holder.__setitem__(0, top_hit(query)), daemon=True)
+        wiki.start()
+        error = False
+        try:
+            results = web_search(query)
+        except Exception:
+            results, error = [], True
+        wiki.join(timeout=TIMEOUT)
+        items = []
+        hit = hit_holder[0]
+        if hit is not None:
+            items.append({"kind": "hit", "section": hit.source, "title": hit.title, "sub": hit.text, "glyph": "󰖟", "action": hit.url or "https://fr.wikipedia.org"})
+        for r in results[:8]:
+            items.append({"kind": "web", "section": "Sur le Web", "title": r.title, "sub": r.snippet, "domain": r.domain,
+                          "icon": r.icon_url, "action": r.url})
+        send(seq, "web", items, error=error)
+
+    def emit(obj: dict) -> None:
+        with lock:
+            sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+            sys.stdout.flush()
+
+    def calc_history() -> list:
+        try:
+            return [list(x) for x in json.loads(HISTORY_FILE.read_text())][:12]
+        except (OSError, ValueError, TypeError):
+            return []
+
+    hist = calc_history()
+    if hist:
+        last = calculate(hist[0][1].split(" ")[0])
+        if last is not None:
+            CONSTANTS["ans"] = last
+
+    for line in sys.stdin:
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        # ── Calculatrice du shell
+        if "calc" in msg:
+            text = str(msg["calc"])
+            result = None
+            if text.strip():
+                result = convert(text)
+                if result is None:
+                    v = calculate(text)
+                    result = format_number(v) if v is not None else None
+            emit({"stage": "calc", "seq": msg.get("seq", 0), "result": result})
+            continue
+        if "commit" in msg:
+            expr, result = str(msg["commit"]), str(msg.get("result", ""))
+            hist = [[expr, result]] + [h for h in calc_history() if h[0] != expr]
+            try:
+                STATE_DIR.mkdir(parents=True, exist_ok=True)
+                HISTORY_FILE.write_text(json.dumps(hist[:12], ensure_ascii=False))
+            except OSError:
+                pass
+            v = calculate(result.split(" ")[0])
+            if v is not None:
+                CONSTANTS["ans"] = v
+            copy_text(result.replace(" ", "").replace("\u202f", ""))
+            emit({"stage": "history", "items": hist[:12]})
+            continue
+        if "history" in msg:
+            if msg["history"] == "clear":
+                try:
+                    HISTORY_FILE.write_text("[]")
+                except OSError:
+                    pass
+            emit({"stage": "history", "items": calc_history()})
+            continue
+        if "run" in msg:
+            try:
+                run_action(msg["run"])
+            except Exception:
+                pass
+            continue
+        seq = int(msg.get("seq", 0))
+        query = str(msg.get("q", "")).strip()
+        state["seq"] = seq
+        try:
+            send(seq, "local", local_items(query))
+        except Exception:
+            send(seq, "local", [])
+        if query:
+            threading.Thread(target=slow, args=(seq, query), daemon=True).start()
+    return 0
+
+
+def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "serve":
+        return serve()
+    if len(sys.argv) > 1 and sys.argv[1] in ("calc", "calculatrice", "-c"):
+        return Calculator().run([sys.argv[0]])
+    return Spotlight("search").run([sys.argv[0]])
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

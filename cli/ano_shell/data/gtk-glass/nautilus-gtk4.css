@@ -1,0 +1,158 @@
+/* Modèle du liquid glass GTK — Nautilus seulement.
+ * Ne pas copier tel quel : caelestia-glass-gtk le transforme en
+ * ~/.config/gtk-4.0/liquid-glass.css en remplaçant :
+ *   {{bg:A}} {{pop:A}} {{view:A}}  fond de fenêtre / menus / vues du thème Caelestia,
+ *                                  opacité A ajustée (thème clair, curseur d'intensité)
+ *   {{shade:A}}  voile de lecture (noir en sombre, blanc en clair), ajusté aussi
+ *   {{ink:A}}    remplissage de survol (blanc en sombre, noir en clair), fixe
+ * Choix et intensité : Paramètres → Fond d'écran et style → Liquid glass. */
+
+/* Verre de base : libadwaita 1.6+ tire ses fonds de variables CSS, on les rend translucides */
+window.nautilus-window {
+  --window-bg-color: {{bg:0.46}};
+  --view-bg-color: transparent;
+  --headerbar-bg-color: transparent;
+  --headerbar-backdrop-color: transparent;
+  --headerbar-shade-color: {{ink:0.05}};
+  --sidebar-bg-color: transparent;
+  --sidebar-backdrop-color: transparent;
+  --sidebar-shade-color: {{ink:0.06}};
+  --secondary-sidebar-bg-color: transparent;
+  --card-bg-color: {{ink:0.05}};
+  background-color: {{bg:0.46}};
+  /* Voile lumineux en haut, comme une lentille éclairée d'en haut */
+  background-image: linear-gradient(to bottom, alpha(white, 0.06), alpha(white, 0.015) 35%, transparent 70%);
+}
+
+/* Barre latérale : la plus transparente, comme le Finder */
+window.nautilus-window .sidebar-pane,
+window.nautilus-window .sidebar-pane toolbarview,
+window.nautilus-window .sidebar-pane headerbar,
+window.nautilus-window .navigation-sidebar,
+window.nautilus-window placessidebar,
+window.nautilus-window placessidebar list {
+  background-color: transparent;
+  background-image: none;
+  box-shadow: none;
+}
+
+/* Zone des fichiers : une plaque de verre un peu plus teintée pour la lisibilité */
+window.nautilus-window .content-pane,
+window.nautilus-window .content-pane > toolbarview {
+  background-color: {{view:0.38}};
+  background-image: none;
+}
+
+window.nautilus-window .view,
+window.nautilus-window gridview,
+window.nautilus-window columnview,
+window.nautilus-window columnview > listview,
+window.nautilus-window listview,
+window.nautilus-window scrolledwindow,
+window.nautilus-window viewport,
+window.nautilus-window .nautilus-list-view,
+window.nautilus-window .nautilus-grid-view {
+  background-color: transparent;
+  background-image: none;
+}
+
+/* Barre du haut fondue dans le verre, avec un fin liseré lumineux en bas */
+window.nautilus-window headerbar,
+window.nautilus-window .top-bar {
+  background-color: transparent;
+  background-image: none;
+  box-shadow: inset 0 -1px alpha(white, 0.06);
+}
+
+/* Séparateur entre la barre latérale et les fichiers : un trait de lumière */
+window.nautilus-window .content-pane {
+  box-shadow: inset 1px 0 alpha(white, 0.07);
+}
+
+/* Barre de chemin et recherche : petites plaques de verre */
+window.nautilus-window .path-bar-box,
+window.nautilus-window .nautilus-path-bar,
+window.nautilus-window headerbar entry,
+window.nautilus-window searchbar entry {
+  background-color: {{ink:0.06}};
+  box-shadow: inset 0 1px alpha(white, 0.08);
+  border-radius: 10px;
+}
+
+/* Lignes de la barre latérale : survol et sélection en verre */
+window.nautilus-window .navigation-sidebar row {
+  border-radius: 9px;
+  transition: background-color 180ms cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+
+window.nautilus-window .navigation-sidebar row:hover {
+  background-color: {{ink:0.06}};
+}
+
+window.nautilus-window .navigation-sidebar row:selected {
+  background-color: alpha(@accent_bg_color, 0.22);
+  box-shadow: inset 0 1px alpha(white, 0.10);
+}
+
+/* Fichiers : survol et sélection en verre */
+window.nautilus-window gridview > child,
+window.nautilus-window columnview row {
+  border-radius: 12px;
+  transition: background-color 180ms cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+
+window.nautilus-window gridview > child:hover,
+window.nautilus-window columnview row:hover {
+  background-color: {{ink:0.05}};
+}
+
+window.nautilus-window gridview > child:selected,
+window.nautilus-window columnview row:selected {
+  background-color: alpha(@accent_bg_color, 0.20);
+  box-shadow: inset 0 1px alpha(white, 0.10);
+}
+
+/* Menus et popups : verre plus dense pour rester lisibles */
+window.nautilus-window popover > contents,
+window.nautilus-window popover > arrow {
+  background-color: {{pop:0.82}};
+  box-shadow: inset 0 1px alpha(white, 0.08), 0 8px 24px alpha(black, 0.30);
+}
+/* ---------------------------------------------------------------------------
+ *  Flou d'arrière-plan (GTK 4.22+, backdrop-filter) : les boîtes de dialogue
+ *  libadwaita sont dessinées dans la fenêtre, le flou du compositeur ne les
+ *  atteint pas. On floute donc nous-mêmes ce qu'il y a derrière, façon macOS.
+ * ------------------------------------------------------------------------- */
+/* Voile derrière le dialogue : assombrit et adoucit toute la fenêtre */
+window.nautilus-window floating-sheet > dimming,
+window.nautilus-window bottom-sheet > dimming {
+  background-color: alpha(black, 0.28);
+  backdrop-filter: blur(6px) saturate(115%);
+}
+/* Le dialogue lui-même : verre dépoli épais, couleurs avivées */
+window.nautilus-window floating-sheet > sheet,
+window.nautilus-window bottom-sheet > sheet,
+window.nautilus-window dialog.floating sheet,
+window.nautilus-window dialog.alert sheet {
+  backdrop-filter: blur(36px) saturate(180%) brightness(85%);
+}
+/* Toasts et barre d'état flottante de Nautilus */
+window.nautilus-window toast,
+window.nautilus-window .floating-bar {
+  backdrop-filter: blur(20px) saturate(160%);
+}
+
+/* ---------------------------------------------------------------------------
+ *  Flou du compositeur (GTK 4.24+) : GTK envoie lui-même sa zone de flou à
+ *  Hyprland (ext-background-effect) d'après les backdrop-filter, et Hyprland
+ *  ne floute plus que cette zone. On la demande donc sur toute la fenêtre et
+ *  sur les menus, pour le même flou que kitty, le shell et les applis Qt.
+ *  Le fond quasi invisible est nécessaire : sans lui GTK ignore la demande.
+ * ------------------------------------------------------------------------- */
+window.nautilus-window > * {
+  background-color: alpha(black, 0.01);
+  backdrop-filter: blur(20px);
+}
+window.nautilus-window popover > contents {
+  backdrop-filter: blur(20px);
+}

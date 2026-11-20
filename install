@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  Ano Shell — Installateur 1-clic autonome (zéro dépendance Caelestia)
+#  https://github.com/Abdoul273/ano-shell
+#
+#  Usage :
+#    ./install [--yes] [--no-deps] [--standalone-hypr] [--migrate-caelestia] [--dry-run] [--help]
+# ============================================================================
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKUP_DIR="$HOME/.local/share/ano-shell/backups/$(date +%Y%m%d-%H%M%S)"
+MANIFEST="$BACKUP_DIR/manifest"
+
+YES=0
+NO_DEPS=0
+STANDALONE_HYPR=0
+MIGRATE_CAELESTIA=0
+DRY_RUN=0
+
+for arg in "$@"; do
+    case "$arg" in
+        --yes|-y) YES=1 ;;
+        --no-deps) NO_DEPS=1 ;;
+        --standalone-hypr) STANDALONE_HYPR=1 ;;
+        --migrate-caelestia) MIGRATE_CAELESTIA=1 ;;
+        --dry-run) DRY_RUN=1 ;;
+        --help|-h)
+            sed -n '2,10p' "$0"
+            exit 0
+            ;;
+        *)
+            echo "Option inconnue : $arg (utilisez --help)" >&2
+            exit 1
+            ;;
+    esac
+done
+
+B=$'\033[1m' G=$'\033[32m' Y=$'\033[33m' C=$'\033[36m' R=$'\033[0m'
+step() { printf "\n${B}${C}==> %s${R}\n" "$*"; }
+ok()   { printf "  ${G}✓${R} %s\n" "$*"; }
+warn() { printf "  ${Y}!${R} %s\n" "$*"; }
+
+run() {
+    if (( DRY_RUN )); then
+        printf "  [dry-run] %s\n" "$*"
+    else
+        "$@"
+    fi
+}
+
+backup_path() {
+    local dst="$1"
+    if [[ -e "$dst" || -L "$dst" ]]; then
+        local rel="${dst#"$HOME/"}"
+        if (( DRY_RUN )); then
+            printf "  [dry-run] sauvegarde %s\n" "$dst"
+            return
+        fi
+        mkdir -p "$BACKUP_DIR/$(dirname "$rel")"
+        cp -a "$dst" "$BACKUP_DIR/$rel"
+        printf "%s\n" "$dst" >> "$MANIFEST"
+    fi
+}
+
+install_item() {
+    local src="$ROOT/$1" dst="$2"
+    backup_path "$dst"
+    if (( DRY_RUN )); then
+        printf "  [dry-run] installe %s -> %s\n" "$1" "$dst"
+        return
+    fi
+    mkdir -p "$(dirname "$dst")"
+    rm -rf "$dst"
+    cp -a "$src" "$dst"
+}
+
+step "Vérification de l'environnement"
+command -v Hyprland >/dev/null 2>&1 || warn "Hyprland introuvable — installez hyprland avant de lancer une session."
+if command -v qs >/dev/null 2>&1; then
+    ok "Quickshell détecté ($(command -v qs))"
+else
+    warn "Quickshell (qs) introuvable — installez quickshell-git (AUR)."
+fi
+
+if (( ! NO_DEPS )); then
+    step "Installation de la CLI autonome ano-shell"
+    if command -v pip >/dev/null 2>&1; then
+        run python3 -m pip install --user --break-system-packages --no-build-isolation --no-deps "$ROOT/cli"
+        ok "CLI ano-shell installée (~/.local/bin/ano-shell)"
+    else
+        warn "pip absent : installez le paquet AUR ano-shell ou python-pip."
+    fi
+fi
+
+step "Installation du shell QML, des outils et des thèmes"
+install_item "shell" "$HOME/.config/quickshell/ano-shell"
+ok "Shell QML installé dans ~/.config/quickshell/ano-shell"
+
+mkdir -p "$HOME/.local/bin"
+for tool in "$ROOT/bin/"*; do
+    [[ -f "$tool" ]] || continue
+    name="$(basename "$tool")"
+    run install -Dm755 "$tool" "$HOME/.local/bin/$name"
+done
+ok "Outils installés dans ~/.local/bin/"
+
+# Configuration Hyprland (autonome ou greffe)
+run mkdir -p "$HOME/.config/ano-shell/hypr"
+install_item "config/hypr/shell.conf" "$HOME/.config/ano-shell/hypr/shell.conf"
+install_item "config/hypr/gestures.conf" "$HOME/.config/ano-shell/hypr/gestures.conf"
+if [[ ! -f "$HOME/.config/ano-shell/hypr/colors.conf" ]]; then
+    run touch "$HOME/.config/ano-shell/hypr/colors.conf"
+fi
+
+if (( STANDALONE_HYPR )) || [[ ! -f "$HOME/.config/hypr/hyprland.conf" && ! -f "$HOME/.config/hypr/hyprland.lua" ]]; then
+    install_item "config/hypr/standalone/hyprland.conf" "$HOME/.config/hypr/hyprland.conf"
+    ok "Configuration Hyprland autonome installée dans ~/.config/hypr/hyprland.conf"
+elif [[ -f "$HOME/.config/hypr/hyprland.conf" ]]; then
+    if ! grep -q "ano-shell/hypr/shell.conf" "$HOME/.config/hypr/hyprland.conf"; then
+        backup_path "$HOME/.config/hypr/hyprland.conf"
+        if (( ! DRY_RUN )); then
+            printf '\n# Ano Shell Liquid Glass\nsource = ~/.config/ano-shell/hypr/shell.conf\n' >> "$HOME/.config/hypr/hyprland.conf"
+        fi
+        ok "Ligne source ajoutée à ~/.config/hypr/hyprland.conf (sauvegarde dans $BACKUP_DIR)"
+    else
+        ok "source ano-shell/hypr/shell.conf déjà présente dans hyprland.conf"
+    fi
+else
+    warn "Config Hyprland Lua détectée : lancez ano-shell côte à côte avec 'setsid -f ano-shell shell -d'."
+fi
+
+# Styles outils, sons, kitty
+install_item "config/tools/tools-base.css" "$HOME/.config/ano-shell/tools-base.css"
+for d in "$ROOT/config/tools/ano-"*; do
+    [[ -d "$d" ]] || continue
+    install_item "config/tools/$(basename "$d")" "$HOME/.config/$(basename "$d")"
+done
+
+if [[ -d "$ROOT/config/sounds" ]]; then
+    run mkdir -p "$HOME/.local/share/ano-shell/sounds"
+    run cp -an "$ROOT/config/sounds/." "$HOME/.local/share/ano-shell/sounds/"
+    ok "Sons installés dans ~/.local/share/ano-shell/sounds"
+fi
+
+if [[ -d "$ROOT/config/kitty" ]]; then
+    run mkdir -p "$HOME/.config/kitty"
+    run cp -a "$ROOT/config/kitty/." "$HOME/.config/kitty/"
+    ok "Thème Kitty Liquid Glass installé"
+fi
+
+# Unités systemd user
+run mkdir -p "$HOME/.config/systemd/user"
+for unit in "$ROOT/config/systemd/user/"*; do
+    [[ -f "$unit" ]] || continue
+    run install -Dm644 "$unit" "$HOME/.config/systemd/user/$(basename "$unit")"
+done
+run systemctl --user daemon-reload || true
+run systemctl --user enable --now ano-shell-theme.path ano-shell-login-sync.path ano-shell-watch.timer bt-audio-autoswitch.service || true
+ok "Unités systemd utilisateur activées"
+
+step "Profil matériel, migration et génération des thèmes"
+CLI_BIN="$(command -v ano-shell || echo "$HOME/.local/bin/ano-shell")"
+if (( MIGRATE_CAELESTIA )); then
+    run "$CLI_BIN" migrate
+fi
+if [[ ! -f "$HOME/.config/ano-shell/glass.json" ]]; then
+    run "$CLI_BIN" glass --auto
+    ok "Profil Liquid Glass adapté automatiquement à ton matériel"
+fi
+run "$CLI_BIN" theme --no-reload || true
+
+step "Diagnostic rapide"
+if (( ! DRY_RUN )); then
+    "$CLI_BIN" doctor || true
+fi
+
+cat <<EOF
+
+${B}${G}Installation d'Ano Shell terminée.${R}
+
+Si les plugins C++ (/usr/lib/qt6/qml/AnoShell) ne sont pas encore compilés :
+  cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_SYSCONFDIR=/etc
+  cmake --build build
+  sudo cmake --install build
+
+Puis démarrer Ano Shell (écran déverrouillé) :
+  setsid -f ano-shell shell -d
+EOF

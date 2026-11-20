@@ -1,0 +1,13 @@
+Ano Shell — Standalone Liquid Glass Desktop Shell for Hyprland
+Copyright (C) 2026 Abdoul Goudousse Diallo
+
+This program is free software under the GNU General Public License v3.0 (GPL-3.0).
+See LICENSE for the full license text.
+
+Third-party attributions:
+- Derived from Caelestia Shell (https://github.com/caelestia-dots/shell),
+  licensed under GPL-3.0.
+- Color scheme & CLI concepts adapted from Caelestia CLI
+  (https://github.com/caelestia-dots/cli), licensed under GPL-3.0.
+- Material 3 analytic shapes powered by m3shapes
+  (https://github.com/soramanew/m3shapes), licensed under Apache-2.0.
