@@ -121,7 +121,7 @@ install_system_packages() {
         qt6-imageformats qt6-multimedia qt6-multimedia-ffmpeg qt6-shadertools
         # Applis & environnement terminal complet (Nautilus, Kitty, Fastfetch, Fish, Starship, Onde CLI)
         nautilus sushi kitty fastfetch fish starship eza zoxide adw-gtk-theme
-        mpv ffmpeg yt-dlp
+        firefox pwvucontrol hyprpicker mpv ffmpeg yt-dlp
         # Outils Wayland & Python (ano-shell + onde-cli)
         python python-pip python-pillow python-rich python-mutagen
         python-numpy python-scipy python-flask
