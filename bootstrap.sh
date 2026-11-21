@@ -18,12 +18,15 @@ if [[ $EUID -eq 0 ]]; then
 fi
 
 if ! command -v pacman >/dev/null 2>&1; then
-    echo "Ano Shell est conçu pour Arch Linux / EndeavourOS (pacman introuvable)." >&2
+    echo "Ano Shell est conçu pour Arch Linux et dérivés (EndeavourOS, CachyOS, Manjaro, Garuda — pacman introuvable)." >&2
     exit 1
 fi
 
-echo "==> Préparation de l'installation complète d'Ano Shell (Arch Linux)"
+echo "==> Préparation de l'installation complète d'Ano Shell (Arch Linux / dérivés)"
 sudo -v
+
+# Éviter les erreurs de clés GPG sur une ISO Arch ancienne
+sudo pacman -Sy --needed --noconfirm archlinux-keyring 2>/dev/null || true
 
 if ! command -v git >/dev/null 2>&1 || ! pacman -Q base-devel >/dev/null 2>&1; then
     echo "==> Installation de git et base-devel"
@@ -35,8 +38,12 @@ if [[ -d "$DEST/.git" ]]; then
     echo "==> Mise à jour du dépôt existant ($DEST)"
     git -C "$DEST" pull --ff-only
 else
+    rm -rf "$DEST"
     echo "==> Clonage d'Ano Shell dans $DEST"
     git clone --depth 1 "$REPO_URL" "$DEST"
 fi
 
+if [[ ! -t 0 && -r /dev/tty ]]; then
+    exec "$DEST/install" --full --yes "$@" </dev/tty
+fi
 exec "$DEST/install" --full --yes "$@"

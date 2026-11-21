@@ -57,7 +57,7 @@ def run_doctor(quiet: bool = False) -> int:
         if m_sys and m_built and m_sys.group(1) != m_built.group(1):
             err(
                 f"quickshell compilé contre Qt {m_built.group(1)} alors que qt6-base est en {m_sys.group(1)} "
-                "— recompiler quickshell-git."
+                "— mettez à jour quickshell ou recompilez quickshell-git."
             )
         elif m_sys:
             ok(f"Alignement Qt6 OK ({m_sys.group(1)})")
@@ -96,7 +96,12 @@ def run_doctor(quiet: bool = False) -> int:
     else:
         warn("Aucun shell.qml installé dans ~/.config/quickshell/ano-shell ou /etc/xdg/quickshell/ano-shell.")
 
-    # 5. Erreurs Hyprland (si session active)
+    # 5. Dépendances runtime essentielles
+    for tool in ("Hyprland", "kitty", "grim", "slurp", "wl-copy", "wpctl", "nmcli", "jq", "wtype"):
+        if not shutil.which(tool):
+            warn(f"Outil runtime absent du PATH : {tool}")
+
+    # 6. Erreurs Hyprland (si session active)
     if shutil.which("hyprctl"):
         rc, out = _run(["hyprctl", "configerrors"])
         if rc == 0 and out.strip():

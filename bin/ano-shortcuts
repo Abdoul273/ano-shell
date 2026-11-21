@@ -34,7 +34,7 @@ SHORTCUTS = [
         ("Super + Maj + B", "Écouteurs 3D : animation 3D interactive façon AirPodsDesktop, batterie et connexion Bluetooth"),
         ("Super + Tab", "Mission Control : voir toutes les fenêtres et bureaux"),
         ("Super + H", "Rechercher un raccourci (Entrée le déclenche)"),
-        ("Super + I", "Ouvrir les paramètres de Caelestia"),
+        ("Super + I", "Ouvrir les paramètres d'Ano Shell"),
         ("Super + Retour arrière", "Menu éteindre / redémarrer / verrouiller"),
         ("Super + L", "Verrouiller l'écran"),
         ("Super + Q", "Fermer la fenêtre active"),

@@ -107,12 +107,17 @@ Singleton {
         }
     }
 
-    // Hyprland plus léger en économie : flou en 1 passe, sans ombres. Valeurs normales =
-    // blurPasses / shadowEnabled de ~/.config/hypr/variables.lua.
+    // Hyprland plus léger en économie : flou en 1 passe, sans ombres.
     function hyprEco(on: bool): void {
-        Quickshell.execDetached(["hyprctl", "eval", on
-            ? "hl.config({ decoration = { blur = { passes = 1 }, shadow = { enabled = false } } })"
-            : "hl.config({ decoration = { blur = { passes = 2 }, shadow = { enabled = true } } })"]);
+        if (Hypr.usingLua) {
+            Quickshell.execDetached(["hyprctl", "eval", on
+                ? "hl.config({ decoration = { blur = { passes = 1 }, shadow = { enabled = false } } })"
+                : "hl.config({ decoration = { blur = { passes = 2 }, shadow = { enabled = true } } })"]);
+        } else {
+            Quickshell.execDetached(["hyprctl", "--batch", on
+                ? "keyword decoration:blur:passes 1;keyword decoration:shadow:enabled false"
+                : "keyword decoration:blur:passes 2;keyword decoration:shadow:enabled true"]);
+        }
     }
 
     onPctChanged: checkSaver()

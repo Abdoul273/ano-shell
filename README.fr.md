@@ -1,6 +1,6 @@
 # Ano Shell
 
-> **Bureau Liquid Glass 100 % autonome pour Arch Linux + Hyprland** — s'installe en **une seule commande** depuis un Arch Linux vierge (**« no desktop »**), sans aucune dépendance à `caelestia-shell`, `caelestia-cli`, `libcava`, `sndio` ni `aubio`.
+> **Bureau Liquid Glass 100 % autonome pour Arch Linux & dérivés (EndeavourOS, CachyOS, Manjaro, Garuda) + Hyprland** — s'installe en **une seule commande** depuis un système vierge (**« no desktop »**), sans aucune dépendance à `caelestia-shell`, `caelestia-cli`, `libcava`, `sndio` ni `aubio`.
 
 [English version](README.md)
 

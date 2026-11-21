@@ -14,7 +14,11 @@ for pid in $(pgrep -u "$(id -u)" -x Hyprland); do
     grep -qx "0::$scope" "/proc/$pid/cgroup" 2>/dev/null && hypr=$pid
 done
 
-hyprctl dispatch 'hl.dsp.exit()' >/dev/null 2>&1
+if [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/hypr/hyprland.lua" ]; then
+    hyprctl dispatch 'hl.dsp.exit()' >/dev/null 2>&1 || hyprctl dispatch exit >/dev/null 2>&1
+else
+    hyprctl dispatch exit >/dev/null 2>&1
+fi
 
 # Attend la fin de Hyprland (10 s max), puis laisse SDDM reprendre la main.
 i=0

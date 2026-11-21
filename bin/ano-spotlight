@@ -483,11 +483,26 @@ def top_hit(query: str) -> TopHit | None:
 CLOCK_RE = re.compile(r"^(minuteur|timer|chrono(?:mètre|metre)?|stopwatch|stop(?:per)?\s+(?:le\s+)?(?:minuteur|chrono(?:mètre|metre)?|timer))\b\s*(.*)$", re.I)
 
 
+def _is_lua_hypr() -> bool:
+    cfg = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return (cfg / "hypr/hyprland.lua").is_file()
+
+
+def _hypr_global_cmd(name: str) -> list[str]:
+    if _is_lua_hypr():
+        return ["hyprctl", "dispatch", f'hl.dsp.global("{name}")']
+    return ["hyprctl", "dispatch", "global", name]
+
+
+def _tool_bin(name: str) -> str:
+    return shutil.which(name) or str(Path.home() / ".local/bin" / name)
+
+
 def clock_command(text: str) -> tuple[list[str], str] | None:
     """« minuteur 5 min », « timer 1h30 », « chrono », « stop minuteur » → commande de la Dynamic Island."""
     app = {"horloge": "timer", "alarme": "alarms", "alarmes": "alarms", "réveil": "alarms", "pomodoro": "pomodoro"}.get(text.strip().lower())
     if app:
-        return ["hyprctl", "dispatch", 'hl.dsp.global("ano-shell:clock")'], "Ouvrir l'Horloge"
+        return _hypr_global_cmd("ano-shell:clock"), "Ouvrir l'Horloge"
     m = CLOCK_RE.match(text.strip())
     if not m:
         return None
@@ -498,7 +513,7 @@ def clock_command(text: str) -> tuple[list[str], str] | None:
     if word.startswith("chrono") or word == "stopwatch":
         return base + ["stopwatch"], "Lancer le chronomètre dans l'île"
     if not re.search(r"\d", rest):
-        return ["hyprctl", "dispatch", 'hl.dsp.global("ano-shell:clock")'], "Ouvrir l'Horloge (minuteur)"
+        return _hypr_global_cmd("ano-shell:clock"), "Ouvrir l'Horloge (minuteur)"
     return base + ["timer", rest], f"Lancer un minuteur de {rest} dans l'île"
 
 
@@ -558,7 +573,6 @@ def search_apps(query: str, limit: int = 5) -> list:
 
 
 HOME = str(Path.home())
-BIN = HOME + "/.local/bin/"
 
 # Actions du système : (titre, mots-clés, icône, commande)
 ACTIONS = [
@@ -566,17 +580,17 @@ ACTIONS = [
     ("Mettre en veille", "veille suspendre dormir sleep", "󰤄", ["systemctl", "suspend"]),
     ("Redémarrer", "redemarrer reboot restart", "󰜉", ["systemctl", "reboot"]),
     ("Éteindre", "eteindre shutdown arreter poweroff", "󰐥", ["systemctl", "poweroff"]),
-    ("Se déconnecter", "deconnecter logout session", "󰍃", [BIN + "ano-logout"]),
-    ("Paramètres de Caelestia", "parametres reglages settings nexus preferences", "󰒓", ["qs", "-c", "ano-shell", "ipc", "call", "nexus", "open"]),
-    ("Horloge", "horloge minuteur chrono alarme pomodoro reveil", "󰔛", ["hyprctl", "dispatch", 'hl.dsp.global("ano-shell:clock")']),
-    ("Écouteurs 3D", "ecouteurs airpods bluetooth cetw572 casque batterie", "󰋋", ["hyprctl", "dispatch", 'hl.dsp.global("ano-shell:earbuds")']),
-    ("Calculatrice", "calculatrice calcul", "󰃬", [BIN + "ano-spotlight", "calc"]),
+    ("Se déconnecter", "deconnecter logout session", "󰍃", [_tool_bin("ano-logout")]),
+    ("Paramètres d'Ano Shell", "parametres reglages settings nexus preferences", "󰒓", ["qs", "-c", "ano-shell", "ipc", "call", "nexus", "open"]),
+    ("Horloge", "horloge minuteur chrono alarme pomodoro reveil", "󰔛", _hypr_global_cmd("ano-shell:clock")),
+    ("Écouteurs 3D", "ecouteurs airpods bluetooth cetw572 casque batterie", "󰋋", _hypr_global_cmd("ano-shell:earbuds")),
+    ("Calculatrice", "calculatrice calcul", "󰃬", [_tool_bin("ano-spotlight"), "calc"]),
     ("Capture d'écran", "capture ecran screenshot", "󰹑", ["qs", "-c", "ano-shell", "ipc", "call", "picker", "open"]),
     ("Mission Control", "mission control fenetres bureaux", "󰕰", ["qs", "-c", "ano-shell", "ipc", "call", "missioncontrol", "open"]),
-    ("Raccourcis clavier", "raccourcis clavier shortcuts aide", "󰌌", [BIN + "ano-shortcuts"]),
-    ("Presse-papiers", "presse papiers clipboard historique", "󰅌", [BIN + "ano-clipboard-pro"]),
-    ("Emojis", "emoji emojis smiley", "󰞅", [BIN + "ano-emoji-pro"]),
-    ("Choisir l'affichage", "affichage ecran externe projection display", "󰍹", [BIN + "ano-display-pro"]),
+    ("Raccourcis clavier", "raccourcis clavier shortcuts aide", "󰌌", [_tool_bin("ano-shortcuts")]),
+    ("Presse-papiers", "presse papiers clipboard historique", "󰅌", [_tool_bin("ano-clipboard-pro")]),
+    ("Emojis", "emoji emojis smiley", "󰞅", [_tool_bin("ano-emoji-pro")]),
+    ("Choisir l'affichage", "affichage ecran externe projection display", "󰍹", [_tool_bin("ano-display-pro")]),
 ]
 
 
@@ -1008,10 +1022,12 @@ class Spotlight(Gtk.Application):
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 elif action.startswith("note:"):
                     # La note s'ouvre dans les Notes rapides (Super + Maj + N)
-                    subprocess.Popen(["sh", "-c", 'qs -c ano-shell ipc call notes select "$1"; hyprctl dispatch \'hl.dsp.global("ano-shell:quicknotes")\'', "sh", action[5:]],
+                    subprocess.Popen(["qs", "-c", "ano-shell", "ipc", "call", "notes", "select", action[5:]],
+                                     start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.Popen(_hypr_global_cmd("ano-shell:quicknotes"),
                                      start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 elif action.startswith("task:"):
-                    subprocess.Popen(["hyprctl", "dispatch", 'hl.dsp.global("ano-shell:quicktasks")'],
+                    subprocess.Popen(_hypr_global_cmd("ano-shell:quicktasks"),
                                      start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 elif action.startswith("file:"):
                     subprocess.Popen(["xdg-open", action[5:]], start_new_session=True,
@@ -1855,9 +1871,10 @@ def run_action(action: str) -> None:
     elif action.startswith("cmd:"):
         subprocess.Popen(json.loads(action[4:]), **quiet)
     elif action.startswith("note:"):
-        subprocess.Popen(["sh", "-c", 'qs -c ano-shell ipc call notes select "$1"; hyprctl dispatch \'hl.dsp.global("ano-shell:quicknotes")\'', "sh", action[5:]], **quiet)
+        subprocess.Popen(["qs", "-c", "ano-shell", "ipc", "call", "notes", "select", action[5:]], **quiet)
+        subprocess.Popen(_hypr_global_cmd("ano-shell:quicknotes"), **quiet)
     elif action.startswith("task:"):
-        subprocess.Popen(["hyprctl", "dispatch", 'hl.dsp.global("ano-shell:quicktasks")'], **quiet)
+        subprocess.Popen(_hypr_global_cmd("ano-shell:quicktasks"), **quiet)
     elif action.startswith("file:"):
         subprocess.Popen(["xdg-open", action[5:]], **quiet)
     elif action:

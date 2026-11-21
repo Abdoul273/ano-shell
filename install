@@ -5,7 +5,8 @@
 #
 #  Usage :
 #    ./install [--full] [--yes] [--no-deps] [--no-build] [--rebuild]
-#              [--standalone-hypr] [--migrate-caelestia] [--dry-run] [--help]
+#              [--standalone-hypr] [--with-plymouth] [--migrate-caelestia]
+#              [--dry-run] [--help]
 # ============================================================================
 
 set -euo pipefail
@@ -20,6 +21,7 @@ NO_DEPS=0
 NO_BUILD=0
 REBUILD=0
 STANDALONE_HYPR=0
+WITH_PLYMOUTH=0
 MIGRATE_CAELESTIA=0
 DRY_RUN=0
 
@@ -31,6 +33,7 @@ for arg in "$@"; do
         --no-build) NO_BUILD=1 ;;
         --rebuild) REBUILD=1 ;;
         --standalone-hypr) STANDALONE_HYPR=1 ;;
+        --with-plymouth) WITH_PLYMOUTH=1 ;;
         --migrate-caelestia) MIGRATE_CAELESTIA=1 ;;
         --dry-run) DRY_RUN=1 ;;
         --help|-h)
@@ -108,27 +111,47 @@ PACMAN_FLAGS=(--needed)
 
 install_system_packages() {
     step "Installation des paquets Arch Linux officiels (Hyprland, Wayland, audio, applis)"
+    run sudo pacman -Sy --needed --noconfirm archlinux-keyring 2>/dev/null || true
+
     local pkgs=(
+        # Outils de base (si ./install --full est lancé sans bootstrap.sh)
+        git base-devel
         # Bureau Wayland / Hyprland + portails + session
-        hyprland xdg-desktop-portal-hyprland xdg-desktop-portal-gtk
-        polkit-gnome gnome-keyring sddm xdg-user-dirs
+        hyprland xdg-desktop-portal xdg-desktop-portal-hyprland xdg-desktop-portal-gtk
+        polkit-gnome gnome-keyring sddm accountsservice xdg-user-dirs
         # Audio, Bluetooth, Réseau, Alimentation, Capteurs
         pipewire pipewire-pulse pipewire-alsa wireplumber
-        bluez bluez-utils networkmanager power-profiles-daemon upower
+        bluez bluez-utils networkmanager upower
         brightnessctl ddcutil lm_sensors fftw libqalculate libpipewire
         # Qt6 & outils de compilation des plugins AnoShell.*
         cmake ninja pkgconf qt6-base qt6-declarative qt6-wayland qt6-svg
         qt6-imageformats qt6-multimedia qt6-multimedia-ffmpeg qt6-shadertools
         # Applis & environnement terminal complet (Nautilus, Kitty, Fastfetch, Fish, Starship, Onde CLI)
-        nautilus sushi kitty fastfetch fish starship eza zoxide adw-gtk-theme
-        firefox pwvucontrol hyprpicker mpv ffmpeg yt-dlp
-        # Outils Wayland & Python (ano-shell + onde-cli)
-        python python-pip python-pillow python-rich python-mutagen
+        nautilus sushi kitty fastfetch fish starship eza zoxide btop adw-gtk-theme
+        firefox pwvucontrol hyprpicker hyprsunset mpv ffmpeg yt-dlp sound-theme-freedesktop
+        # Outils Wayland, GTK4 & Python (ano-shell + outils bin/ + onde-cli)
+        python python-pip python-gobject gtk4 python-pillow python-rich python-mutagen
         python-numpy python-scipy python-flask
-        grim slurp wl-clipboard cliphist swappy libnotify dconf
+        grim slurp wl-clipboard cliphist swappy wtype ydotool libnotify dconf jq psmisc libxml2 fd
         # Polices
         ttf-jetbrains-mono-nerd ttf-cascadia-code-nerd noto-fonts noto-fonts-emoji
     )
+
+    # Éviter un conflit pacman si tuned-ppd ou tlp est déjà installé (CachyOS / EndeavourOS)
+    if ! pacman -Q tuned-ppd >/dev/null 2>&1 && ! pacman -Q tlp >/dev/null 2>&1; then
+        pkgs+=(power-profiles-daemon)
+    fi
+
+    # Paquets disponibles directement en binaire officiel (extra / dérivés)
+    if ! command -v qs >/dev/null 2>&1 && pacman -Si quickshell >/dev/null 2>&1; then
+        pkgs+=(quickshell)
+    fi
+    for opt_repo in gpu-screen-recorder ttf-material-symbols-variable python-webrtcvad python-google-genai; do
+        if pacman -Si "$opt_repo" >/dev/null 2>&1; then
+            pkgs+=("$opt_repo")
+        fi
+    done
+
     run sudo pacman -Syu "${PACMAN_FLAGS[@]}" "${pkgs[@]}"
     ok "Paquets officiels Arch installés"
 }
@@ -148,33 +171,65 @@ ensure_aur_helper() {
         AUR_HELPER="yay"
         return
     fi
-    local tmp
+    local tmp aur_pkg="yay-bin"
     tmp="$(mktemp -d)"
-    git clone --depth 1 https://aur.archlinux.org/yay-bin.git "$tmp/yay-bin"
-    (cd "$tmp/yay-bin" && makepkg -si --noconfirm)
+    if git clone --depth 1 "https://aur.archlinux.org/${aur_pkg}.git" "$tmp/$aur_pkg" \
+        && (cd "$tmp/$aur_pkg" && makepkg -si --noconfirm); then
+        rm -rf "$tmp"
+        AUR_HELPER="yay"
+        ok "yay-bin installé"
+        return
+    fi
+    rm -rf "$tmp"
+    tmp="$(mktemp -d)"
+    git clone --depth 1 https://aur.archlinux.org/yay.git "$tmp/yay"
+    (cd "$tmp/yay" && makepkg -si --noconfirm)
     rm -rf "$tmp"
     AUR_HELPER="yay"
-    ok "yay-bin installé"
+    ok "yay installé"
+}
+
+quickshell_qt_mismatch() {
+    command -v qs >/dev/null 2>&1 || return 1
+    local qt_sys qbin qt_built
+    qt_sys="$(pacman -Q qt6-base 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
+    qbin="$(command -v quickshell || command -v qs)"
+    qt_built="$(strings "$qbin" 2>/dev/null | grep -oE '/QtCore/[0-9]+\.[0-9]+\.[0-9]+/QtCore/private' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
+    [[ -n "$qt_sys" && -n "$qt_built" && "$qt_sys" != "$qt_built" ]]
 }
 
 install_aur_packages() {
     ensure_aur_helper
-    step "Installation des paquets AUR (Quickshell, Material You, Darkly, QtEngine, polices)"
+    step "Installation des paquets AUR complémentaires (Material You, Darkly, QtEngine, polices)"
     local aur_flags=(--needed)
     (( YES )) && aur_flags+=(--noconfirm)
 
-    # Indispensables
-    run "$AUR_HELPER" -S "${aur_flags[@]}" quickshell-git python-materialyoucolor
+    # Quickshell (si absent des dépôts officiels, ou recompilation si ABI Qt6 désalignée sur quickshell-git)
+    if ! command -v qs >/dev/null 2>&1; then
+        run "$AUR_HELPER" -S "${aur_flags[@]}" quickshell-git
+    elif ! (( DRY_RUN )) && quickshell_qt_mismatch && pacman -Q quickshell-git >/dev/null 2>&1; then
+        warn "Désalignement Qt6 détecté sur quickshell-git : recompilation automatique"
+        run "$AUR_HELPER" -S --rebuild "${aur_flags[@]}" quickshell-git
+    fi
 
-    # Recommandés (chacun tolérant en cas de souci AUR temporaire)
-    local opt_aur=(
-        gpu-screen-recorder
-        darkly-bin
-        qtengine
-        ttf-material-symbols-variable
-        ttf-rubik-vf
-    )
-    for pkg in "${opt_aur[@]}"; do
+    # Material You (avec repli pip si la compilation AUR échoue)
+    if ! pacman -Q python-materialyoucolor >/dev/null 2>&1; then
+        if ! run "$AUR_HELPER" -S "${aur_flags[@]}" python-materialyoucolor; then
+            warn "Échec AUR pour python-materialyoucolor, repli via pip utilisateur"
+            if ! python3 -c "import materialyoucolor" >/dev/null 2>&1; then
+                run python3 -m pip install --user --break-system-packages materialyoucolor || true
+            fi
+        fi
+    fi
+
+    # Optionnels (sans conflit avec des variantes déjà installées)
+    if ! pacman -Q darkly-bin >/dev/null 2>&1 && ! pacman -Q darkly >/dev/null 2>&1; then
+        run "$AUR_HELPER" -S "${aur_flags[@]}" darkly-bin || warn "Paquet AUR optionnel ignoré : darkly-bin"
+    fi
+    if ! pacman -Q qtengine >/dev/null 2>&1 && ! pacman -Q qtengine-git >/dev/null 2>&1; then
+        run "$AUR_HELPER" -S "${aur_flags[@]}" qtengine || warn "Paquet AUR optionnel ignoré : qtengine"
+    fi
+    for pkg in gpu-screen-recorder ttf-material-symbols-variable ttf-rubik-vf; do
         if ! pacman -Q "$pkg" >/dev/null 2>&1; then
             run "$AUR_HELPER" -S "${aur_flags[@]}" "$pkg" || warn "Paquet AUR optionnel ignoré : $pkg"
         fi
@@ -230,6 +285,43 @@ install_cursor() {
         warn "Téléchargement du curseur impossible (hors ligne ?) : curseur par défaut conservé."
     fi
     rm -rf "$tmp"
+}
+
+detect_kb_layout() {
+    local km=""
+    if [[ -f /etc/vconsole.conf ]]; then
+        km="$(sed -n 's/^KEYMAP=//p' /etc/vconsole.conf | tr -d '"' | head -n1 || true)"
+    fi
+    if [[ -z "$km" ]] && command -v localectl >/dev/null 2>&1; then
+        km="$(localectl status 2>/dev/null | sed -n 's/.*X11 Layout:[[:space:]]*//p' | head -n1 || true)"
+        if [[ -n "$km" && "$km" != "n/a" ]]; then
+            printf '%s\n' "${km%%,*}"
+            return
+        fi
+        km="$(localectl status 2>/dev/null | sed -n 's/.*VC Keymap:[[:space:]]*//p' | head -n1 || true)"
+    fi
+    case "${km,,}" in
+        fr*) echo "fr" ;;
+        be*) echo "be" ;;
+        ch*) echo "ch" ;;
+        ca*) echo "ca" ;;
+        de*) echo "de" ;;
+        es*) echo "es" ;;
+        it*) echo "it" ;;
+        pt*) echo "pt" ;;
+        uk*|gb*) echo "gb" ;;
+        us*) echo "us" ;;
+        *) echo "fr" ;;
+    esac
+}
+
+run_gsettings() {
+    command -v gsettings >/dev/null 2>&1 || return 0
+    if [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+        run gsettings "$@" 2>/dev/null || true
+    elif command -v dbus-run-session >/dev/null 2>&1; then
+        run dbus-run-session -- gsettings "$@" 2>/dev/null || true
+    fi
 }
 
 install_qtengine_config() {
@@ -299,6 +391,20 @@ if [[ -d "$ROOT/extras/onde-cli" ]]; then
     ok "Onde CLI (lecteur musique terminal + paroles synchronisées) installé (~/.local/bin/onde-cli)"
 fi
 
+if [[ -f "$ROOT/cli/ano_shell/data/emojis.txt" ]]; then
+    run install -Dm644 "$ROOT/cli/ano_shell/data/emojis.txt" "$HOME/.local/share/ano-shell/emojis.txt"
+fi
+
+# Rendre ano-shell et onde-cli accessibles partout (y compris hooks pacman root et SDDM/sh)
+if [[ -x "$HOME/.local/bin/ano-shell" ]] && [[ ! -e /usr/local/bin/ano-shell || -L /usr/local/bin/ano-shell ]]; then
+    run sudo install -d /usr/local/bin
+    run sudo ln -sf "$HOME/.local/bin/ano-shell" /usr/local/bin/ano-shell
+fi
+if [[ -x "$HOME/.local/share/ano-shell/onde-cli/onde-cli" ]] && [[ ! -e /usr/local/bin/onde-cli || -L /usr/local/bin/onde-cli ]]; then
+    run sudo install -d /usr/local/bin
+    run sudo ln -sf "$HOME/.local/share/ano-shell/onde-cli/onde-cli" /usr/local/bin/onde-cli
+fi
+
 step "Configuration d'Hyprland, Kitty, Fastfetch, Fish, Starship et Nautilus"
 run mkdir -p "$HOME/.config/ano-shell/hypr"
 install_item "config/hypr/shell.conf" "$HOME/.config/ano-shell/hypr/shell.conf"
@@ -307,9 +413,13 @@ if [[ ! -f "$HOME/.config/ano-shell/hypr/colors.conf" ]]; then
     run touch "$HOME/.config/ano-shell/hypr/colors.conf"
 fi
 
+KB_LAYOUT="$(detect_kb_layout)"
 if (( STANDALONE_HYPR )) || [[ ! -f "$HOME/.config/hypr/hyprland.conf" && ! -f "$HOME/.config/hypr/hyprland.lua" ]]; then
     install_item "config/hypr/standalone/hyprland.conf" "$HOME/.config/hypr/hyprland.conf"
-    ok "Configuration Hyprland autonome installée (~/.config/hypr/hyprland.conf)"
+    if (( ! DRY_RUN )) && [[ -f "$HOME/.config/hypr/hyprland.conf" ]]; then
+        sed -i "s/^    kb_layout = .*/    kb_layout = ${KB_LAYOUT}/" "$HOME/.config/hypr/hyprland.conf"
+    fi
+    ok "Configuration Hyprland autonome installée (~/.config/hypr/hyprland.conf, clavier : $KB_LAYOUT)"
 elif [[ -f "$HOME/.config/hypr/hyprland.conf" ]]; then
     if ! grep -q "ano-shell/hypr/shell.conf" "$HOME/.config/hypr/hyprland.conf"; then
         backup_path "$HOME/.config/hypr/hyprland.conf"
@@ -353,7 +463,11 @@ fi
 install_item "config/tools/tools-base.css" "$HOME/.config/ano-shell/tools-base.css"
 for d in "$ROOT/config/tools/ano-"*; do
     [[ -d "$d" ]] || continue
-    install_item "config/tools/$(basename "$d")" "$HOME/.config/$(basename "$d")"
+    tool_name="$(basename "$d")"
+    install_item "config/tools/$tool_name" "$HOME/.config/$tool_name"
+    if (( ! DRY_RUN )) && [[ -f "$HOME/.config/$tool_name/style.css" ]]; then
+        sed -i "s|@HOME@|$HOME|g" "$HOME/.config/$tool_name/style.css"
+    fi
 done
 
 if [[ -d "$ROOT/config/sounds" ]]; then
@@ -364,6 +478,26 @@ fi
 
 install_qtengine_config
 install_cursor
+
+# Dossiers XDG & PATH utilisateur persistant (systemd, SDDM, bash, fish)
+command -v xdg-user-dirs-update >/dev/null 2>&1 && run xdg-user-dirs-update || true
+PICTURES_DIR="$HOME/Pictures"
+VIDEOS_DIR="$HOME/Videos"
+if command -v xdg-user-dir >/dev/null 2>&1; then
+    PICTURES_DIR="$(xdg-user-dir PICTURES 2>/dev/null || echo "$HOME/Pictures")"
+    VIDEOS_DIR="$(xdg-user-dir VIDEOS 2>/dev/null || echo "$HOME/Videos")"
+fi
+run mkdir -p "$PICTURES_DIR/Wallpapers" "$HOME/.config/environment.d"
+if (( ! DRY_RUN )); then
+    cat > "$HOME/.config/environment.d/10-ano-shell.conf" <<EOF
+PATH=$HOME/.local/bin:\${PATH}
+XDG_PICTURES_DIR=$PICTURES_DIR
+XDG_VIDEOS_DIR=$VIDEOS_DIR
+EOF
+    if [[ ! -f "$HOME/.bash_profile" ]] || ! grep -q '\.local/bin' "$HOME/.bash_profile" 2>/dev/null; then
+        printf '\n# Ano Shell PATH\n[ -d "$HOME/.local/bin" ] && export PATH="$HOME/.local/bin:$PATH"\n' >> "$HOME/.bash_profile"
+    fi
+fi
 
 # Unités systemd utilisateur
 step "Activation des services système et utilisateur"
@@ -377,16 +511,29 @@ run systemctl --user enable --now \
     ano-shell-theme.path \
     ano-shell-login-sync.path \
     ano-shell-watch.timer \
-    bt-audio-autoswitch.service 2>/dev/null || true
+    bt-audio-autoswitch.service \
+    ydotool.service \
+    pipewire.socket \
+    pipewire-pulse.socket \
+    wireplumber.service 2>/dev/null || true
 ok "Unités systemd utilisateur activées"
 
-# Sur Arch « no desktop », activer les services système essentiels + SDDM Liquid Glass + shell Fish
+# Sur Arch « no desktop », activer les services système essentiels + SDDM Liquid Glass + clavier + Fish
 if (( FULL )); then
-    for svc in NetworkManager bluetooth power-profiles-daemon sddm; do
+    for svc in NetworkManager bluetooth power-profiles-daemon; do
         if systemctl list-unit-files "${svc}.service" >/dev/null 2>&1; then
             run sudo systemctl enable "$svc" 2>/dev/null || true
         fi
     done
+    if systemctl list-unit-files sddm.service >/dev/null 2>&1; then
+        run sudo systemctl enable --force sddm 2>/dev/null || true
+    fi
+    if getent group input >/dev/null 2>&1 && ! id -nG "$USER" | grep -qw input; then
+        run sudo usermod -aG input "$USER" 2>/dev/null || true
+    fi
+    if [[ ! -f /etc/X11/xorg.conf.d/00-keyboard.conf ]] && command -v localectl >/dev/null 2>&1; then
+        run sudo localectl --no-convert set-x11-keymap "$KB_LAYOUT" 2>/dev/null || true
+    fi
     ok "Services système activés (SDDM, NetworkManager, Bluetooth, Power Profiles)"
 
     if command -v fish >/dev/null 2>&1 && [[ "$(getent passwd "$USER" | cut -d: -f7)" != "$(command -v fish)" ]]; then
@@ -396,9 +543,8 @@ if (( FULL )); then
     fi
 fi
 
-# Dossiers XDG, profil GPU/batterie, fond d'écran initial et thèmes Liquid Glass (GTK4/3 Nautilus + Portail + Qt Darkly)
+# Profil GPU/batterie, fond d'écran initial et thèmes Liquid Glass (GTK4/3 Nautilus + Portail + Qt Darkly)
 step "Profil matériel, migration et génération des thèmes Liquid Glass"
-command -v xdg-user-dirs-update >/dev/null 2>&1 && run xdg-user-dirs-update || true
 CLI_BIN="$(command -v ano-shell 2>/dev/null || echo "$HOME/.local/bin/ano-shell")"
 
 if (( MIGRATE_CAELESTIA )); then
@@ -409,21 +555,27 @@ if [[ ! -f "$HOME/.config/ano-shell/glass.json" ]]; then
     ok "Profil Liquid Glass adapté automatiquement à ton matériel"
 fi
 if [[ ! -e "$HOME/.local/state/ano-shell/wallpaper/current" ]] && [[ -f "$HOME/.config/quickshell/ano-shell/assets/wallpaper.webp" ]]; then
+    if [[ -z "$(ls -A "$PICTURES_DIR/Wallpapers" 2>/dev/null || true)" ]]; then
+        run cp -n "$HOME/.config/quickshell/ano-shell/assets/wallpaper.webp" "$PICTURES_DIR/Wallpapers/default.webp" 2>/dev/null || true
+    fi
     run "$CLI_BIN" wallpaper -f "$HOME/.config/quickshell/ano-shell/assets/wallpaper.webp" || true
 fi
 run "$CLI_BIN" theme --no-reload || true
 
 # Préférence sombre GTK/GNOME pour Nautilus & applis libadwaita
-if command -v gsettings >/dev/null 2>&1; then
-    run gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark' 2>/dev/null || true
-    run gsettings set org.gnome.desktop.interface gtk-theme 'adw-gtk3-dark' 2>/dev/null || true
-fi
+run_gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark'
+run_gsettings set org.gnome.desktop.interface gtk-theme 'adw-gtk3-dark'
 
 # Écran de connexion SDDM Liquid Glass (si SDDM installé)
 if command -v sddm >/dev/null 2>&1 && [[ -x "$ROOT/config/sddm/install-login-screen" ]]; then
     if (( FULL )) || ask "Installer l'écran de connexion SDDM Liquid Glass ?" o; then
         run sudo "$ROOT/config/sddm/install-login-screen" || warn "Installation SDDM ignorée"
     fi
+fi
+
+# Écran de démarrage Plymouth Liquid Glass (sur demande explicite)
+if (( WITH_PLYMOUTH )) && [[ -x "$ROOT/config/plymouth/install-boot-splash" ]]; then
+    run sudo "$ROOT/config/plymouth/install-boot-splash" || warn "Installation Plymouth ignorée"
 fi
 
 step "Diagnostic final (ano-shell doctor)"

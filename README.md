@@ -1,6 +1,6 @@
 # Ano Shell
 
-> **Standalone Liquid Glass desktop environment for Arch Linux + Hyprland** — installs from a fresh Arch Linux (`no desktop`) TTY in **one command**, with zero dependency on `caelestia-shell`, `caelestia-cli`, `libcava`, `sndio` or `aubio`.
+> **Standalone Liquid Glass desktop environment for Arch Linux & derivatives (EndeavourOS, CachyOS, Manjaro, Garuda) + Hyprland** — installs from a fresh `no desktop` TTY in **one command**, with zero dependency on `caelestia-shell`, `caelestia-cli`, `libcava`, `sndio` or `aubio`.
 
 [Version française (guide pas-à-pas)](README.fr.md)
 

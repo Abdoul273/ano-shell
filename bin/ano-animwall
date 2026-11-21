@@ -6,7 +6,7 @@
 #   ano-animwall             affiche le fond animé actuel
 #   ano-animwall frames <vidéos...>  crée les miniatures manquantes (utilisé par le shell)
 set -e
-state="${XDG_STATE_HOME:-$HOME/.local/state}/caelestia/wallpaper"
+state="${XDG_STATE_HOME:-$HOME/.local/state}/ano-shell/wallpaper"
 mkdir -p "$state"
 frames="$HOME/.local/share/ano-shell/animated-frames"
 mkdir -p "$frames"

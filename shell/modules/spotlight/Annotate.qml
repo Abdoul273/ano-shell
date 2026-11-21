@@ -7,6 +7,7 @@ import Quickshell
 import qs.components
 import qs.components.effects
 import qs.services
+import qs.utils
 
 // Annoter une capture (remplace swappy) dans le même verre que l'île : une goutte tombe
 // de l'île et devient l'éditeur. Outils : pinceau (B), texte (T), rectangle (R),
@@ -160,20 +161,21 @@ Item {
     // Rend l'image annotée en taille réelle puis la copie ou l'enregistre
     function exportImage(save: bool): void {
         commitText();
-        const out = save ? `${Quickshell.env("HOME")}/Images/Captures/capture_${stamp()}.png` : `/tmp/caelestia-annotate-${Date.now()}.png`;
+        const dir = `${Paths.pictures}/Captures`;
+        const out = save ? `${dir}/capture_${stamp()}.png` : `/tmp/ano-shell-annotate-${Date.now()}.png`;
         doc.grabToImage(result => {
             if (save)
-                Quickshell.execDetached(["mkdir", "-p", `${Quickshell.env("HOME")}/Images/Captures`]);
+                Quickshell.execDetached(["mkdir", "-p", dir]);
             if (!result.saveToFile(out)) {
                 showHint(I18n.tr("Impossible d'écrire l'image"));
                 return;
             }
             if (save) {
                 Quickshell.execDetached(["sh", "-c", `wl-copy --type image/png < '${out}'`]);
-                Quickshell.execDetached(["notify-send", "-a", "Caelestia", "-i", out, I18n.tr("Capture enregistrée"), out.replace(Quickshell.env("HOME"), "~")]);
+                Quickshell.execDetached(["notify-send", "-a", "ano-shell", "-i", out, I18n.tr("Capture enregistrée"), out.replace(Quickshell.env("HOME"), "~")]);
             } else {
                 Quickshell.execDetached(["sh", "-c", `wl-copy --type image/png < '${out}'`]);
-                Quickshell.execDetached(["notify-send", "-a", "Caelestia", "-i", out, I18n.tr("Capture copiée"), I18n.tr("L'image annotée est dans le presse-papiers")]);
+                Quickshell.execDetached(["notify-send", "-a", "ano-shell", "-i", out, I18n.tr("Capture copiée"), I18n.tr("L'image annotée est dans le presse-papiers")]);
             }
             root.close();
         }, Qt.size(imgW, imgH));

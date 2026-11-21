@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -130,8 +131,41 @@ def monitor_spec_lua(spec: dict) -> str:
     return "hl.monitor({ " + ", ".join(parts) + " })"
 
 
+def is_lua_config() -> bool:
+    cfg = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return (cfg / "hypr/hyprland.lua").is_file()
+
+
+def monitor_spec_conf(spec: dict) -> str:
+    output = str(spec["output"])
+    if spec.get("disabled"):
+        return f"{output},disable"
+    mode = str(spec.get("mode") or "preferred")
+    pos = str(spec.get("position") or "auto")
+    scale = str(spec.get("scale") if spec.get("scale") is not None else 1)
+    rule = f"{output},{mode},{pos},{scale}"
+    mirror = spec.get("mirror")
+    if mirror:
+        rule += f",mirror,{mirror}"
+    return rule
+
+
 def apply_monitor(spec: dict) -> bool:
-    return hypr_eval(monitor_spec_lua(spec))
+    if is_lua_config():
+        return hypr_eval(monitor_spec_lua(spec))
+    try:
+        result = subprocess.run(
+            ["hyprctl", "keyword", "monitor", monitor_spec_conf(spec)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=4,
+            text=True,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    text = (result.stdout + result.stderr).strip().lower()
+    return result.returncode == 0 and "error" not in text and "fail" not in text
 
 
 def drm_outputs() -> list[Output]:

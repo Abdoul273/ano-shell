@@ -16,8 +16,29 @@ config_dir = Path(os.getenv("XDG_CONFIG_HOME") or HOME / ".config")
 data_dir = Path(os.getenv("XDG_DATA_HOME") or HOME / ".local/share")
 state_dir = Path(os.getenv("XDG_STATE_HOME") or HOME / ".local/state")
 cache_dir = Path(os.getenv("XDG_CACHE_HOME") or HOME / ".cache")
-pictures_dir = Path(os.getenv("XDG_PICTURES_DIR") or HOME / "Images")
-videos_dir = Path(os.getenv("XDG_VIDEOS_DIR") or HOME / "Vidéos")
+
+
+def _xdg_user_dir(key: str, *fallbacks: str) -> Path:
+    if env := os.getenv(key):
+        return Path(env)
+    user_dirs = config_dir / "user-dirs.dirs"
+    try:
+        for line in user_dirs.read_text(encoding="utf-8").splitlines():
+            if line.startswith(f"{key}="):
+                val = line.split("=", 1)[1].strip().strip('"').replace("$HOME", str(HOME))
+                if val:
+                    return Path(val)
+    except OSError:
+        pass
+    for name in fallbacks:
+        p = HOME / name
+        if p.exists():
+            return p
+    return HOME / fallbacks[0]
+
+
+pictures_dir = _xdg_user_dir("XDG_PICTURES_DIR", "Pictures", "Images")
+videos_dir = _xdg_user_dir("XDG_VIDEOS_DIR", "Videos", "Vidéos")
 
 app_config_dir = config_dir / APP_NAME
 app_data_dir = data_dir / APP_NAME

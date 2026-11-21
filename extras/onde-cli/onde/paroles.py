@@ -21,7 +21,10 @@ from pathlib import Path
 
 import mutagen
 import numpy as np
-import webrtcvad
+try:
+    import webrtcvad
+except ImportError:
+    webrtcvad = None
 from scipy.ndimage import maximum_filter1d
 from scipy.signal import butter, sosfiltfilt
 
@@ -351,19 +354,22 @@ def _profil_vocal(chemin):
     env = np.clip(voix / p95, 0.0, 1.5).astype(np.float32)
 
     # Détection d'activité vocale WebRTC par trames de 20 ms (uniquement hors silence)
-    vad = webrtcvad.Vad(2)
-    pcm16 = np.clip(vm[:n * hop] * 32767.0, -32768, 32767).astype(np.int16)
-    vad_flags = np.zeros(n, dtype=np.float32)
-    hop20 = hop * 2
-    for i in range(0, n - 1, 2):
-        if env[i] <= 0.04 and env[i + 1] <= 0.04:
-            continue
-        trame = pcm16[i * hop:i * hop + hop20].tobytes()
-        try:
-            if vad.is_speech(trame, sr):
-                vad_flags[i] = vad_flags[i + 1] = 1.0
-        except ValueError:
-            pass
+    if webrtcvad is not None:
+        vad = webrtcvad.Vad(2)
+        pcm16 = np.clip(vm[:n * hop] * 32767.0, -32768, 32767).astype(np.int16)
+        vad_flags = np.zeros(n, dtype=np.float32)
+        hop20 = hop * 2
+        for i in range(0, n - 1, 2):
+            if env[i] <= 0.04 and env[i + 1] <= 0.04:
+                continue
+            trame = pcm16[i * hop:i * hop + hop20].tobytes()
+            try:
+                if vad.is_speech(trame, sr):
+                    vad_flags[i] = vad_flags[i + 1] = 1.0
+            except ValueError:
+                pass
+    else:
+        vad_flags = (env > 0.08).astype(np.float32)
 
     presence = (env * (0.4 + 0.6 * vad_flags)).astype(np.float32)
 

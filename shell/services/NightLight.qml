@@ -96,13 +96,15 @@ Singleton {
         if (hasHyprsunset)
             return; // géré par le processus hyprsunset
         if (k >= 6450) {
-            applyProc.command = ["hyprctl", "eval", "hl.config({ decoration = { screen_shader = '' } })"];
+            applyProc.command = Hypr.usingLua
+                ? ["hyprctl", "eval", "hl.config({ decoration = { screen_shader = '' } })"]
+                : ["hyprctl", "keyword", "decoration:screen_shader", ""];
         } else {
             const c = tintOf(k).map(v => v.toFixed(4));
             flip = 1 - flip;
             const file = `${shaderDir}/nightlight-${flip ? "b" : "a"}.frag`;
             const src = `#version 300 es
-// Éclairage de nuit (Caelestia) — généré par services/NightLight.qml, ne pas modifier
+// Éclairage de nuit (Ano Shell) — généré par services/NightLight.qml, ne pas modifier
 precision highp float;
 in vec2 v_texcoord;
 uniform sampler2D tex;
@@ -112,7 +114,10 @@ void main() {
     fragColor = vec4(c.rgb * vec3(${c[0]}, ${c[1]}, ${c[2]}), c.a);
 }
 `;
-            applyProc.command = ["sh", "-c", 'mkdir -p "$(dirname "$2")" && printf "%s" "$1" > "$2" && exec hyprctl eval "hl.config({ decoration = { screen_shader = \'$2\' } })"', "sh", src, file];
+            const cmd = Hypr.usingLua
+                ? 'mkdir -p "$(dirname "$2")" && printf "%s" "$1" > "$2" && exec hyprctl eval "hl.config({ decoration = { screen_shader = \'$2\' } })"'
+                : 'mkdir -p "$(dirname "$2")" && printf "%s" "$1" > "$2" && exec hyprctl keyword decoration:screen_shader "$2"';
+            applyProc.command = ["sh", "-c", cmd, "sh", src, file];
         }
         applyProc.running = true;
     }
@@ -146,7 +151,9 @@ void main() {
             root.hasHyprsunset = code === 0;
             // Le filtre de secours ne doit pas rester par-dessus hyprsunset
             if (root.hasHyprsunset)
-                Quickshell.execDetached(["hyprctl", "eval", "hl.config({ decoration = { screen_shader = '' } })"]);
+                Quickshell.execDetached(Hypr.usingLua
+                    ? ["hyprctl", "eval", "hl.config({ decoration = { screen_shader = '' } })"]
+                    : ["hyprctl", "keyword", "decoration:screen_shader", ""]);
         }
     }
 

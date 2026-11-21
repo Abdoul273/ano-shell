@@ -165,3 +165,28 @@ def test_bare_arch_bundle_complete_and_clean():
         ROOT / "config/hypr/standalone/hyprland.conf",
     ):
         assert "/home/anonymous" not in cfg.read_text(encoding="utf-8"), f"Chemin personnel dans {cfg}"
+
+
+def test_standalone_arch_and_conf_hyprland_ready():
+    """Vérifie emojis.txt embarqué, compatibilité Hyprland .conf (sans Lua requis) et installateur complet."""
+    emojis = ROOT / "cli/ano_shell/data/emojis.txt"
+    assert emojis.is_file() and emojis.stat().st_size > 1000
+
+    assert (ROOT / "packaging/aur/.SRCINFO").is_file()
+
+    assert "ano-shell/wallpaper" in (ROOT / "bin/ano-animwall").read_text(encoding="utf-8")
+    assert "ano-shell/caffeine.json" in (ROOT / "shell/services/IdleInhibitor.qml").read_text(encoding="utf-8")
+    assert "ano-shell:refreshDevices" in (ROOT / "shell/services/Hypr.qml").read_text(encoding="utf-8")
+    assert "hyprctl dispatch exit" in (ROOT / "bin/ano-logout").read_text(encoding="utf-8")
+    assert '"keyword", "monitor"' in (ROOT / "bin/ano-display-pro").read_text(encoding="utf-8")
+    assert "keyword decoration:blur:passes" in (ROOT / "shell/services/BatteryInfo.qml").read_text(encoding="utf-8")
+    assert "keyword decoration:screen_shader" in (ROOT / "shell/services/NightLight.qml").read_text(encoding="utf-8")
+    assert '["hyprctl", "dispatch", "global", name]' in (ROOT / "bin/ano-spotlight").read_text(encoding="utf-8")
+
+    paroles = (ROOT / "extras/onde-cli/onde/paroles.py").read_text(encoding="utf-8")
+    assert "except ImportError:" in paroles and "webrtcvad = None" in paroles
+
+    install_sh = (ROOT / "install").read_text(encoding="utf-8")
+    for pkg in ("python-gobject", "gtk4", "jq", "psmisc", "libxml2", "wtype", "ydotool", "sound-theme-freedesktop", "hyprsunset"):
+        assert pkg in install_sh, f"Paquet manquant dans install : {pkg}"
+    assert "s|@HOME@|$HOME|g" in install_sh

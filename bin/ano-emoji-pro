@@ -107,15 +107,16 @@ class EmojiItem:
 
 def emoji_data_file() -> Path:
     try:
-        from caelestia.utils.paths import cli_data_dir
+        from ano_shell.paths import pkg_data_dir
 
-        path = cli_data_dir / "emojis.txt"
+        path = pkg_data_dir / "emojis.txt"
         if path.exists():
             return path
     except Exception:
         pass
     for path in (
-        Path.home() / ".local/lib/python3.14/site-packages/caelestia/data/emojis.txt",
+        Path("/usr/share/ano-shell/emojis.txt"),
+        Path.home() / ".local/share/ano-shell/emojis.txt",
         Path("/usr/share/caelestia/emojis.txt"),
     ):
         if path.exists():

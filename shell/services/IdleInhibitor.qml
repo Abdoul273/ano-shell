@@ -41,7 +41,7 @@ Singleton {
     FileView {
         id: stateFile
 
-        path: `${Quickshell.env("XDG_STATE_HOME") || `${Quickshell.env("HOME")}/.local/state`}/caelestia/caffeine.json`
+        path: `${Quickshell.env("XDG_STATE_HOME") || `${Quickshell.env("HOME")}/.local/state`}/ano-shell/caffeine.json`
         printErrors: false
         onLoaded: {
             try {

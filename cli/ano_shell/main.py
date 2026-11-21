@@ -5,12 +5,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from pathlib import Path
 
 from ano_shell import __version__
 from ano_shell.doctor import run_doctor
 from ano_shell.glass import detect_hardware_profile, set_glass
 from ano_shell.migrate import run_migrate
+from ano_shell.paths import pictures_dir
 from ano_shell.record import run_record
 from ano_shell.scheme import (
     SCHEME_VARIANTS,
@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     # wallpaper
     sp_wall = sub.add_parser("wallpaper", help="Définir le fond d'écran et générer la palette dynamique")
     sp_wall.add_argument("-f", "--file", help="Chemin vers l'image")
-    sp_wall.add_argument("-r", "--random", nargs="?", const=str(Path.home() / "Images/Wallpapers"), help="Dossier aléatoire")
+    sp_wall.add_argument("-r", "--random", nargs="?", const=str(pictures_dir / "Wallpapers"), help="Dossier aléatoire")
     sp_wall.add_argument("-p", "--print", help="Afficher les couleurs Material You JSON d'une image")
     sp_wall.add_argument("-N", "--no-smart", action="store_true", help="Ne pas choisir auto clair/sombre et variante")
     sp_wall.add_argument("--no-filter", action="store_true", help="Ne pas filtrer par résolution")

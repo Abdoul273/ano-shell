@@ -23,6 +23,7 @@ include = ["ano_shell*"]
 
 [tool.setuptools.package-data]
 ano_shell = [
+    "data/emojis.txt",
     "data/schemes/**/*",
     "data/templates/*",
     "data/gtk-glass/*",

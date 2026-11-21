@@ -25,8 +25,17 @@ rm -f \
     "$HOME/.config/systemd/user/ano-shell-login-sync.service" \
     "$HOME/.config/systemd/user/ano-shell-watch.timer" \
     "$HOME/.config/systemd/user/ano-shell-watch.service" \
-    "$HOME/.config/systemd/user/xdg-desktop-portal-gtk.service.d/ano-shell-glass.conf"
+    "$HOME/.config/systemd/user/bt-audio-autoswitch.service" \
+    "$HOME/.config/systemd/user/xdg-desktop-portal-gtk.service.d/ano-shell-glass.conf" \
+    "$HOME/.config/environment.d/10-ano-shell.conf"
 systemctl --user daemon-reload 2>/dev/null || true
+
+if [[ -L /usr/local/bin/ano-shell ]] && [[ "$(readlink -f /usr/local/bin/ano-shell)" == "$HOME/.local/bin/ano-shell" ]]; then
+    sudo rm -f /usr/local/bin/ano-shell 2>/dev/null || true
+fi
+if [[ -L /usr/local/bin/onde-cli ]] && [[ "$(readlink -f /usr/local/bin/onde-cli)" == "$HOME/.local/share/ano-shell/onde-cli/onde-cli" ]]; then
+    sudo rm -f /usr/local/bin/onde-cli 2>/dev/null || true
+fi
 
 echo "==> Retrait des fichiers utilisateur Ano Shell"
 rm -rf "$HOME/.config/quickshell/ano-shell"
