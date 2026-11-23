@@ -1,0 +1,16 @@
+name: Feature Request
+description: Suggest a new feature, language translation, or Liquid Glass enhancement
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like to see?
+      description: Describe the feature or improvement and why it helps.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context or mockups
+      description: Screenshots, references, or links if helpful.

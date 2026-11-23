@@ -213,6 +213,12 @@ Appuie sur **`Super + H`** à tout moment pour ouvrir l'aide interactive des rac
 
 ---
 
+## 🤝 Contribuer & Communauté
+
+Les retours matériels (NVIDIA/AMD/multi-écrans), traductions (i18n), rapports de bugs et PR sont les bienvenus !
+- Consulte **[CONTRIBUTING.md](CONTRIBUTING.md)** pour démarrer.
+- Rejoins **[GitHub Discussions](https://github.com/Abdoul273/ano-shell/discussions)** pour partager ton bureau ou poser tes questions.
+
 ## 📄 Licence & Attribution
 
 Licence **GPL-3.0**. Dérivé de [caelestia-dots/shell](https://github.com/caelestia-dots/shell) (GPL-3.0) et [m3shapes](https://github.com/soramanew/m3shapes) (Apache-2.0) ; voir [NOTICE](NOTICE).

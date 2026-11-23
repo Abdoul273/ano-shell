@@ -1,0 +1,45 @@
+name: Bug Report
+description: Report a bug, visual glitch, or installation issue in Ano Shell
+labels: ["bug"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Clear description of the bug and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run '...'
+        2. Press '...'
+        3. See error
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: System & GPU
+      description: Distro (Arch, EndeavourOS, CachyOS…), GPU (Intel/AMD/NVIDIA), Hyprland version
+      placeholder: "Arch Linux · AMD Radeon RX 6600 · Hyprland 0.56"
+    validations:
+      required: true
+  - type: dropdown
+    id: profile
+    attributes:
+      label: Liquid Glass Performance Profile
+      options:
+        - ultra
+        - eco (Fluid)
+        - auto
+        - Not installed yet
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `ano-shell doctor` (or installer log)
+      render: shell

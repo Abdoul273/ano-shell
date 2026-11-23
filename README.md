@@ -203,6 +203,12 @@ Press **`Super + H`** anytime to search and trigger any shortcut.
 
 ---
 
+## 🤝 Contributing & Community
+
+Bug reports, hardware/GPU feedback, new translations (i18n), and PRs are warmly welcomed!
+- Read **[CONTRIBUTING.md](CONTRIBUTING.md)** to get started.
+- Join **[GitHub Discussions](https://github.com/Abdoul273/ano-shell/discussions)** to share your setup or ask questions.
+
 ## 📄 License & Attribution
 
 Licensed under **GPL-3.0**. Derived from [caelestia-dots/shell](https://github.com/caelestia-dots/shell) (GPL-3.0) and [m3shapes](https://github.com/soramanew/m3shapes) (Apache-2.0); see [NOTICE](NOTICE).

@@ -1,9 +1,10 @@
 # Changelog
 
-## 1.0.0 — 2026-11-20
+## 1.0.0 — 2026-11-23
 
-- Première version 100 % autonome d'**Ano Shell** (aucune dépendance à `caelestia-shell`, `caelestia-cli`, `caelestia-dots`, `libcava`, `sndio` ni `aubio`).
-- Plugins C++ Qt6 natifs `AnoShell.*` + `AnoShell.Shapes`, avec analyseur de spectre FFT PipeWire + `fftw3`, détecteur de tempo C++ pur et service `SystemWatch` sans `fork/exec`.
-- CLI autonome `ano-shell` (`shell`, `wallpaper`, `scheme`, `theme`, `glass`, `screenshot`, `record`, `doctor`, `migrate`) avec garde-fou anti-verrouillage et moteur Liquid Glass GTK/Qt/Darkly intégré.
-- Optimisations majeures CPU/RAM/GPU au repos : suppression de l'animation 60 FPS du séparateur d'horloge, `windowMaskTex` événementiel, `LazyPanel` sur 16 panneaux modaux/secondaires, `ano-siri` à la demande et allègement d'`ano-agents` / `ano-transfers`.
-- Configuration Hyprland dual-mode (`config/hypr/shell.conf` en greffe 1 ligne + `config/hypr/standalone/hyprland.conf` clé en main), `PKGBUILD` AUR, hook pacman Qt6 et installeur 1-clic.
+- **100% standalone desktop environment for Arch Linux & Hyprland** — installs from a fresh `no desktop` TTY in one command (`bootstrap.sh`), with zero dependency on `caelestia-shell`, `caelestia-cli`, `caelestia-dots`, `libcava`, `sndio`, or `aubio`.
+- **Native Qt6 C++ plugins** (`AnoShell.*` + `AnoShell.Shapes`): native PipeWire + `fftw3` audio spectrum, pure C++ beat tracker, and `/sys`-based `SystemWatch` without `fork/exec`.
+- **Liquid Glass iOS 27 / macOS 27 UI**: redesigned balanced Dynamic Island (rolling clock, workspaces, weather, info/perf/media/timer/transfers/AI agents/calls), Control Center, auto-hiding Dock, 14 refractive glass popups, 3D Earbuds HUD, Mission Control, SDDM Liquid Glass, Kitty, Nautilus GTK4, Qt/KDE Darkly, and `onde-cli`.
+- **Hardware-aware Performance Profiles (`ultra` / `eco` / `auto`)**: selectable interactively during `./install`, via `ano-shell glass --performance`, or live in Settings (`Super + I`), combining `liquidios-fast.frag`, `LazyPanel` lazy loading on 16 panels, event-driven `windowMaskTex`, and on-demand daemons.
+- **Standalone Python CLI (`ano-shell`)**: `shell` (lock-safe), `wallpaper`, `scheme`, `theme`, `glass`, `screenshot`, `record`, `doctor`, and `migrate`.
+- **Dual-mode Hyprland config & packaging**: non-destructive 1-line graft (`config/hypr/shell.conf`), standalone turnkey config, AUR `PKGBUILD`, pacman Qt6 rebuild hook, and full `./uninstall`.
