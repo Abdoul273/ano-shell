@@ -1,10 +1,10 @@
 import QtQuick
+import qs.services
 
 // Proxy léger pour charger les panneaux modaux/secondaires à la demande et libérer
-// leur mémoire après inactivité (réduit la RAM au démarrage de ~590 Mo à ~200 Mo).
-// Le Loader vit dans `host` (mêmes coordonnées que Panels) et chaque sourceComponent
-// encapsule le panneau réel dans un Item exposant `property alias panel` afin que le
-// Loader ne force jamais la taille du panneau à 100 % de l'écran.
+// leur mémoire après inactivité (profil Fluide/Auto : ~250 Mo économisés).
+// En profil Puissance maximale (`!Glass.lazyPanels`), les panneaux restent préchargés
+// en mémoire (0 ms de latence à l'ouverture), sauf ceux explicitement désactivés (`keepLoaded: false`).
 Item {
     id: root
 
@@ -12,6 +12,8 @@ Item {
     required property bool wantOpen
     required property Component sourceComponent
     property int unloadDelayMs: 90000
+    property bool keepLoaded: !Glass.lazyPanels
+    property bool fullscreen: false
 
     readonly property Item loaded: loader.item ? (loader.item.panel ?? loader.item) : null
 
@@ -35,17 +37,26 @@ Item {
     readonly property real blobHeight: loaded && loaded.blobHeight !== undefined ? loaded.blobHeight : 0
     readonly property real reveal: loaded && loaded.reveal !== undefined ? loaded.reveal : 0
 
+    onKeepLoadedChanged: {
+        if (keepLoaded) {
+            unloadTimer.stop();
+            loader.active = true;
+        } else if (!wantOpen && !visible && loader.active && unloadDelayMs > 0) {
+            unloadTimer.restart();
+        }
+    }
+
     onWantOpenChanged: {
         if (wantOpen) {
             unloadTimer.stop();
             loader.active = true;
-        } else if (!visible && unloadDelayMs > 0) {
+        } else if (!keepLoaded && !visible && unloadDelayMs > 0) {
             unloadTimer.restart();
         }
     }
 
     onVisibleChanged: {
-        if (!visible && !wantOpen && loader.active && unloadDelayMs > 0)
+        if (!visible && !wantOpen && !keepLoaded && loader.active && unloadDelayMs > 0)
             unloadTimer.restart();
         else if (visible)
             unloadTimer.stop();
@@ -56,7 +67,7 @@ Item {
 
         interval: root.unloadDelayMs
         onTriggered: {
-            if (!root.wantOpen && !root.visible)
+            if (!root.wantOpen && !root.visible && !root.keepLoaded)
                 loader.active = false;
         }
     }
@@ -66,7 +77,7 @@ Item {
 
         parent: root.host
         anchors.fill: parent
-        active: root.wantOpen
+        active: root.wantOpen || root.keepLoaded
         sourceComponent: root.sourceComponent
     }
 }

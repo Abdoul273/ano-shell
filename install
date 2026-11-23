@@ -5,8 +5,8 @@
 #
 #  Usage :
 #    ./install [--full] [--yes] [--no-deps] [--no-build] [--rebuild]
-#              [--standalone-hypr] [--with-plymouth] [--migrate-caelestia]
-#              [--dry-run] [--help]
+#              [--profile ultra|eco|auto] [--standalone-hypr] [--with-plymouth]
+#              [--migrate-caelestia] [--dry-run] [--help]
 # ============================================================================
 
 set -euo pipefail
@@ -24,14 +24,24 @@ STANDALONE_HYPR=0
 WITH_PLYMOUTH=0
 MIGRATE_CAELESTIA=0
 DRY_RUN=0
+PERF_PROFILE=""
 
-for arg in "$@"; do
-    case "$arg" in
+while [[ $# -gt 0 ]]; do
+    case "$1" in
         --full) FULL=1 ;;
         --yes|-y) YES=1 ;;
         --no-deps) NO_DEPS=1 ;;
         --no-build) NO_BUILD=1 ;;
         --rebuild) REBUILD=1 ;;
+        --profile)
+            shift
+            PERF_PROFILE="${1:-}"
+            [[ "$PERF_PROFILE" =~ ^(ultra|eco|auto)$ ]] || { echo "Profil invalide : $PERF_PROFILE (attendu : ultra | eco | auto)" >&2; exit 1; }
+            ;;
+        --profile=*)
+            PERF_PROFILE="${1#*=}"
+            [[ "$PERF_PROFILE" =~ ^(ultra|eco|auto)$ ]] || { echo "Profil invalide : $PERF_PROFILE (attendu : ultra | eco | auto)" >&2; exit 1; }
+            ;;
         --standalone-hypr) STANDALONE_HYPR=1 ;;
         --with-plymouth) WITH_PLYMOUTH=1 ;;
         --migrate-caelestia) MIGRATE_CAELESTIA=1 ;;
@@ -41,10 +51,11 @@ for arg in "$@"; do
             exit 0
             ;;
         *)
-            echo "Option inconnue : $arg (utilisez --help)" >&2
+            echo "Option inconnue : $1 (utilisez --help)" >&2
             exit 1
             ;;
     esac
+    shift
 done
 
 B=$'\033[1m' G=$'\033[32m' Y=$'\033[33m' C=$'\033[36m' R=$'\033[0m'
@@ -550,10 +561,58 @@ CLI_BIN="$(command -v ano-shell 2>/dev/null || echo "$HOME/.local/bin/ano-shell"
 if (( MIGRATE_CAELESTIA )); then
     run "$CLI_BIN" migrate
 fi
-if [[ ! -f "$HOME/.config/ano-shell/glass.json" ]]; then
-    run "$CLI_BIN" glass --auto
-    ok "Profil Liquid Glass adapté automatiquement à ton matériel"
-fi
+# Choix du profil de performance Liquid Glass (PC puissant vs portable/iGPU)
+choose_performance_profile() {
+    local gpu="GPU intégré" dedicated=0 has_bat=0 cores
+    cores=$(nproc 2>/dev/null || echo 2)
+    for vf in /sys/class/drm/card*/device/vendor; do
+        [[ -r "$vf" ]] || continue
+        case "$(tr '[:upper:]' '[:lower:]' < "$vf")" in
+            0x10de) gpu="NVIDIA dédié"; dedicated=1; break ;;
+            0x1002) gpu="AMD Radeon"; dedicated=1 ;;
+            0x8086) [[ $dedicated -eq 0 ]] && gpu="Intel iGPU" ;;
+        esac
+    done
+    for tf in /sys/class/power_supply/*/type; do
+        [[ -r "$tf" ]] && [[ "$(cat "$tf")" == "Battery" ]] && { has_bat=1; break; }
+    done
+
+    local rec_num=1 rec_key="ultra"
+    if (( ! dedicated )) && (( cores <= 4 || has_bat )); then
+        rec_num=2
+        rec_key="eco"
+    fi
+
+    local chosen="$PERF_PROFILE"
+    if [[ -z "$chosen" ]]; then
+        local desc="$gpu · ${cores} threads"
+        (( has_bat )) && desc+=" · portable" || desc+=" · secteur"
+        printf "  Matériel détecté : %s (recommandé : %s)\n" "$desc" "$rec_num"
+        printf "    ${B}1)${R} Puissance maximale (${C}ultra${R})   — PC puissant / GPU dédié : shader haute précision, panneaux préchargés\n"
+        printf "    ${B}2)${R} Fluide & Autonomie (${C}eco${R})     — même rendu Liquid Glass, shader GPU ×2 plus léger, panneaux à la demande\n"
+        printf "    ${B}3)${R} Automatique (${C}auto${R})           — pleine précision sur secteur, optimisé automatiquement sur batterie\n"
+        if (( YES )) || [[ ! -t 0 ]]; then
+            chosen="$rec_key"
+        else
+            local ans=""
+            read -r -p "  Quel profil appliquer ? [${rec_num}] " ans || true
+            case "${ans:-$rec_num}" in
+                1|ultra|u|U) chosen="ultra" ;;
+                2|eco|e|E) chosen="eco" ;;
+                3|auto|a|A) chosen="auto" ;;
+                *) chosen="$rec_key" ;;
+            esac
+        fi
+    fi
+
+    if [[ ! -f "$HOME/.config/ano-shell/glass.json" ]]; then
+        run "$CLI_BIN" glass --auto --performance "$chosen"
+    else
+        run "$CLI_BIN" glass --performance "$chosen"
+    fi
+    ok "Profil Liquid Glass configuré : $chosen (modifiable dans Paramètres → Fond d'écran et style)"
+}
+choose_performance_profile
 if [[ ! -e "$HOME/.local/state/ano-shell/wallpaper/current" ]] && [[ -f "$HOME/.config/quickshell/ano-shell/assets/wallpaper.webp" ]]; then
     if [[ -z "$(ls -A "$PICTURES_DIR/Wallpapers" 2>/dev/null || true)" ]]; then
         run cp -n "$HOME/.config/quickshell/ano-shell/assets/wallpaper.webp" "$PICTURES_DIR/Wallpapers/default.webp" 2>/dev/null || true

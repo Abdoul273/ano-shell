@@ -11,6 +11,8 @@ from ano_shell.paths import atomic_dump, glass_config_path, load_json
 from ano_shell.theme import GLASS_GTK_MODES, apply_glass_gtk_qt
 
 SHELL_MODES = ("ios", "classic", "off")
+PERF_MODES = ("ultra", "eco", "auto")
+_PERF_ALIASES = {"quality": "ultra", "balanced": "eco"}
 
 
 def detect_hardware_profile() -> dict[str, Any]:
@@ -59,7 +61,7 @@ def detect_hardware_profile() -> dict[str, Any]:
             "shell": "ios",
             "gtk": "complet" if is_dedicated else "nautilus",
             "density": 0.62 if low_power else 0.55,
-            "performance": "balanced" if low_power else "quality",
+            "performance": "eco" if low_power else "ultra",
             "batteryAutoEco": has_battery,
         },
     }
@@ -78,6 +80,7 @@ def set_glass(
     shell_mode: str | None = None,
     gtk_mode: str | None = None,
     density: float | None = None,
+    performance: str | None = None,
     auto: bool = False,
 ) -> dict[str, Any]:
     conf = load_json(glass_config_path, detect_hardware_profile()["recommended"])
@@ -93,6 +96,11 @@ def set_glass(
         conf["gtk"] = gtk_mode
     if density is not None:
         conf["density"] = round(max(0.0, min(1.0, float(density))), 3)
+    if performance is not None:
+        norm = _PERF_ALIASES.get(performance, performance)
+        if norm not in PERF_MODES:
+            raise ValueError(f"Profil performance invalide : {performance} (valides : {PERF_MODES})")
+        conf["performance"] = norm
 
     atomic_dump(glass_config_path, conf)
     apply_glass_gtk_qt(mode=conf.get("gtk"), density=conf.get("density"), reload_desktop=True)

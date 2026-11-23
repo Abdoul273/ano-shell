@@ -176,7 +176,7 @@ Item {
 
                     screen: root.screen
                     screenState: root.screenState
-                    island: island
+                    island: root.island
 
                     anchors.right: parent.right
                     anchors.rightMargin: 6
@@ -201,7 +201,7 @@ Item {
 
                     screen: root.screen
                     screenState: root.screenState
-                    island: island
+                    island: root.island
 
                     anchors.horizontalCenter: parent.horizontalCenter
                     y: Math.round(parent.height * 0.2)
@@ -224,7 +224,7 @@ Item {
 
                     screen: root.screen
                     screenState: root.screenState
-                    island: island
+                    island: root.island
 
                     anchors.horizontalCenter: parent.horizontalCenter
                     y: Math.round(parent.height * 0.2)
@@ -249,7 +249,7 @@ Item {
 
                     screen: root.screen
                     screenState: root.screenState
-                    island: island
+                    island: root.island
 
                     anchors.horizontalCenter: parent.horizontalCenter
                     y: Math.round(parent.height * 0.2)
@@ -272,7 +272,7 @@ Item {
 
                     screen: root.screen
                     screenState: root.screenState
-                    island: island
+                    island: root.island
 
                     anchors.horizontalCenter: parent.horizontalCenter
                     y: Math.round(parent.height * 0.2)
@@ -295,7 +295,7 @@ Item {
 
                     screen: root.screen
                     screenState: root.screenState
-                    island: island
+                    island: root.island
 
                     anchors.horizontalCenter: parent.horizontalCenter
                     y: Math.round(parent.height * 0.2)
@@ -318,7 +318,7 @@ Item {
 
                     screen: root.screen
                     screenState: root.screenState
-                    island: island
+                    island: root.island
 
                     anchors.horizontalCenter: parent.horizontalCenter
                     y: Math.round(parent.height * 0.2)
@@ -341,7 +341,7 @@ Item {
 
                     screen: root.screen
                     screenState: root.screenState
-                    island: island
+                    island: root.island
 
                     anchors.horizontalCenter: parent.horizontalCenter
                     y: Math.round(parent.height * 0.2)
@@ -364,7 +364,7 @@ Item {
 
                     screen: root.screen
                     screenState: root.screenState
-                    island: island
+                    island: root.island
 
                     anchors.horizontalCenter: parent.horizontalCenter
                     y: Math.round(parent.height * 0.16)
@@ -387,7 +387,7 @@ Item {
 
                     screen: root.screen
                     screenState: root.screenState
-                    island: island
+                    island: root.island
 
                     anchors.horizontalCenter: parent.horizontalCenter
                     y: Math.round(parent.height * 0.16)
@@ -410,7 +410,7 @@ Item {
 
                     screen: root.screen
                     screenState: root.screenState
-                    island: island
+                    island: root.island
 
                     anchors.horizontalCenter: parent.horizontalCenter
                     y: Math.round(parent.height * 0.2)
@@ -433,7 +433,7 @@ Item {
 
                     screen: root.screen
                     screenState: root.screenState
-                    island: island
+                    island: root.island
 
                     anchors.horizontalCenter: parent.horizontalCenter
                     y: Math.round(parent.height * 0.1)
@@ -456,7 +456,7 @@ Item {
 
                     screen: root.screen
                     screenState: root.screenState
-                    island: island
+                    island: root.island
 
                     anchors.horizontalCenter: parent.horizontalCenter
                     y: Math.round((parent.height - height) / 2)
@@ -479,7 +479,7 @@ Item {
 
                     screen: root.screen
                     screenState: root.screenState
-                    island: island
+                    island: root.island
 
                     anchors.horizontalCenter: parent.horizontalCenter
                     y: Math.max(0, Math.round((parent.height - height) / 2))
@@ -502,7 +502,7 @@ Item {
 
                     screen: root.screen
                     screenState: root.screenState
-                    island: island
+                    island: root.island
 
                     anchors.horizontalCenter: parent.horizontalCenter
                     y: Math.round(parent.height * 0.12)
@@ -517,6 +517,7 @@ Item {
 
         host: lazyHost
         wantOpen: Island.dock
+        keepLoaded: false
         unloadDelayMs: 5000
         sourceComponent: Component {
             Item {
@@ -527,6 +528,7 @@ Item {
 
                     screen: root.screen
                     screenState: root.screenState
+                    fullscreen: dock.fullscreen
 
                     anchors.horizontalCenter: parent.horizontalCenter
                     anchors.bottom: parent.bottom

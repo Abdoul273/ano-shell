@@ -684,6 +684,13 @@ StyledWindow {
                 width: ipc.size?.[0] ?? 0
                 height: ipc.size?.[1] ?? 0
                 color: "white"
+
+                onXChanged: maskRefresh.restart()
+                onYChanged: maskRefresh.restart()
+                onWidthChanged: maskRefresh.restart()
+                onHeightChanged: maskRefresh.restart()
+                Component.onCompleted: maskRefresh.restart()
+                Component.onDestruction: maskRefresh.restart()
             }
         }
     }
@@ -715,7 +722,11 @@ StyledWindow {
     Connections {
         target: Hypr
 
-        function onActiveWorkspaceChanged(): void {
+        function onFocusedWorkspaceChanged(): void {
+            maskRefresh.restart();
+        }
+
+        function onActiveWsIdChanged(): void {
             maskRefresh.restart();
         }
     }
@@ -768,7 +779,7 @@ StyledWindow {
                 }
             }
 
-            fragmentShader: Qt.resolvedUrl(Quickshell.shellPath(Glass.ios ? "assets/shaders/liquidios.frag.qsb" : "assets/shaders/glassblob.frag.qsb"))
+            fragmentShader: Qt.resolvedUrl(Quickshell.shellPath(Glass.ios ? (Glass.fastShader ? "assets/shaders/liquidios-fast.frag.qsb" : "assets/shaders/liquidios.frag.qsb") : "assets/shaders/glassblob.frag.qsb"))
         }
     }
 

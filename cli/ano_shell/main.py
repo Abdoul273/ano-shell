@@ -98,6 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp_glass.add_argument("--shell", dest="shell_mode", choices=["ios", "classic", "off"])
     sp_glass.add_argument("--gtk", dest="gtk_mode", choices=["nautilus", "complet", "off"])
     sp_glass.add_argument("--density", type=float, help="Densité du verre (0.0 à 1.0)")
+    sp_glass.add_argument("--performance", "--profile", dest="performance", choices=["ultra", "eco", "auto"], help="Profil de performance (ultra, eco, auto)")
     sp_glass.add_argument("--auto", action="store_true", help="Appliquer le profil optimal pour ce matériel")
     sp_glass.add_argument("--hardware", action="store_true", help="Afficher la détection GPU/batterie en JSON")
 
@@ -203,10 +204,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.hardware:
             print(json.dumps(detect_hardware_profile(), indent=2, ensure_ascii=False))
             return 0
-        conf = set_glass(args.shell_mode, args.gtk_mode, args.density, auto=args.auto)
+        conf = set_glass(args.shell_mode, args.gtk_mode, args.density, performance=args.performance, auto=args.auto)
         print(
             f"Liquid Glass : shell={conf.get('shell')}, gtk={conf.get('gtk')}, "
-            f"intensité={round(float(conf.get('density', 0.5)) * 100)} %"
+            f"intensité={round(float(conf.get('density', 0.5)) * 100)} %, "
+            f"profil={conf.get('performance', 'auto')}"
         )
         return 0
     if args.command == "theme":
