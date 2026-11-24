@@ -19,9 +19,9 @@ Shaders GLSL Qt6 réfractifs sur mesure, Dynamic Island iOS 27, Centre de contr�
 
 <br>
 
-<img src="docs/screenshots/hero-control-center.webp" alt="Ano Shell — Centre de contrôle Liquid Glass, Dynamic Island et cadre réfractif sur Hyprland" width="100%" />
+<img src="docs/demo.webp" alt="Ano Shell — Démo en direct du bureau Liquid Glass (Dynamic Island, Centre de contrôle, Horloge Pomodoro & Kitty/Nautilus)" width="100%" />
 
-<sub><b>Ano Shell · Bureau Liquid Glass</b> — Verre réfractif GLSL Qt6 sur mesure, Dynamic Island équilibrée et Centre de contrôle macOS 27 en direct sur Hyprland.</sub>
+<sub><b>Ano Shell · Démo Liquid Glass en direct</b> — Dynamic Island, Centre de contrôle macOS 27, Horloge à réfraction optique &amp; Kitty/Nautilus (<a href="https://github.com/Abdoul273/ano-shell/releases/download/v1.0.0/ano-shell-demo.mp4">Voir la vidéo complète 1080p 60 FPS</a>).</sub>
 
 </div>
 
@@ -30,6 +30,12 @@ Shaders GLSL Qt6 réfractifs sur mesure, Dynamic Island iOS 27, Centre de contr�
 ## ✨ Galerie
 
 <table>
+  <tr>
+    <td colspan="2" align="center">
+      <img src="docs/screenshots/hero-control-center.webp" alt="Ano Shell — Centre de contrôle Liquid Glass, Dynamic Island et cadre réfractif sur Hyprland" width="100%" />
+      <br /><sub><b>Centre de contrôle &amp; Dynamic Island</b> — Verre réfractif GLSL Qt6 sur mesure, Dynamic Island équilibrée et Centre de contrôle macOS 27</sub>
+    </td>
+  </tr>
   <tr>
     <td width="50%">
       <img src="docs/screenshots/kitty-nautilus-glass.webp" alt="Terminal Kitty Liquid Glass avec Fastfetch et Starship à côté de Nautilus GTK4 translucide" />
