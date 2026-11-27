@@ -59,10 +59,14 @@ jobs:
           fi
           echo "Building ano-shell ${PKGVER}"
 
-          # Build source tarball directly (actions/checkout in archlinux container has no .git)
-          tar --exclude='./.git' --exclude='./_site' --exclude='./build' \
-            -czf "/tmp/pkgbuild/ano-shell-${PKGVER}.tar.gz" \
-            --transform "s,^\.,ano-shell-${PKGVER}," .
+          # Build clean source tarball matching GitHub release layout (compatible with bsdtar in makepkg)
+          mkdir -p "/tmp/src_stage/ano-shell-${PKGVER}"
+          cp -a . "/tmp/src_stage/ano-shell-${PKGVER}/"
+          rm -rf "/tmp/src_stage/ano-shell-${PKGVER}/.git" \
+                 "/tmp/src_stage/ano-shell-${PKGVER}/_site" \
+                 "/tmp/src_stage/ano-shell-${PKGVER}/build"
+          tar -C /tmp/src_stage -czf "/tmp/pkgbuild/ano-shell-${PKGVER}.tar.gz" "ano-shell-${PKGVER}"
+          rm -rf /tmp/src_stage
           cp packaging/aur/PKGBUILD packaging/aur/ano-shell.install /tmp/pkgbuild/
 
           # Adapt PKGBUILD for pure official Arch repos (move any AUR-only dep to optdepends so `pacman -S ano-shell` never fails on vanilla Arch)
