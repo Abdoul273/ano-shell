@@ -81,7 +81,7 @@ Singleton {
 
     Process {
         running: root.ignoreClosed
-        command: ["systemd-inhibit", "--what=handle-lid-switch", "--who=Caelestia", "--why=Rester allume capot ferme", "--mode=block", "sleep", "infinity"]
+        command: ["systemd-inhibit", "--what=handle-lid-switch", "--who=Ano Shell", "--why=Rester allume capot ferme", "--mode=block", "sleep", "infinity"]
     }
 
     Process {

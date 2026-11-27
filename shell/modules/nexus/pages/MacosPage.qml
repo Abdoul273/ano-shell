@@ -37,7 +37,7 @@ PageBase {
         ToggleRow {
             enabled: Island.enabled
             text: I18n.tr("Notifications dans l'île")
-            subtext: I18n.tr("Sinon, les bulles de Caelestia en haut à droite")
+            subtext: I18n.tr("Sinon, les bulles classiques en haut à droite")
             checked: Island.notifications
             onToggled: Island.set("notifications", checked)
         }

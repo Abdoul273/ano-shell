@@ -83,16 +83,25 @@ Singleton {
     }
 
     function reloadHyprRules(): void {
-        let rule;
-        if (Hypr.usingLua) {
-            rule = `eval hl.layer_rule({ match = { namespace = "ano-shell-drawers" }, %1 = %2 })`;
-        } else {
-            rule = "keyword layerrule %1 %2, match:namespace ano-shell-drawers";
-        }
-        // Flou toujours actif pour les notifications en liquid glass (surfaces translucides)
-        const blurOn = Hypr.usingLua ? true : 1;
+        // Flou Hyprland toujours actif derrière les gouttes/panneaux Liquid Glass
         const ignoreAlpha = transparency.enabled ? Math.max(0, Math.min(transparency.base - 0.03, 0.2)) : 0.2;
-        Hypr.extras.batchMessage([rule.arg("blur").arg(blurOn), rule.arg("ignore_alpha").arg(ignoreAlpha)]);
+        if (Hypr.usingLua) {
+            Hypr.extras.batchMessage([
+                `eval hl.layer_rule({ match = { namespace = "ano-shell-drawers" }, blur = true, ignore_alpha = ${ignoreAlpha}, animation = "fade" })`,
+                `eval hl.layer_rule({ match = { namespace = "ano-shell-missioncontrol" }, blur = true, ignore_alpha = 0, animation = "fade" })`,
+                `eval hl.layer_rule({ match = { namespace = "ano-shell-wshud" }, blur = true, ignore_alpha = 0.1, no_anim = true })`,
+                `eval hl.layer_rule({ match = { namespace = "ano-shell-(border-exclusion|area-picker)" }, no_anim = true })`,
+                `eval hl.layer_rule({ match = { namespace = "ano-shell-background" }, animation = "fade" })`
+            ]);
+        } else {
+            Hypr.extras.batchMessage([
+                `keyword layerrule blur on, ignore_alpha ${ignoreAlpha}, animation fade, match:namespace ^ano-shell-drawers$`,
+                `keyword layerrule blur on, ignore_alpha 0.0, animation fade, match:namespace ^ano-shell-missioncontrol$`,
+                `keyword layerrule blur on, ignore_alpha 0.1, no_anim on, match:namespace ^ano-shell-wshud$`,
+                `keyword layerrule no_anim on, match:namespace ^ano-shell-(border-exclusion|area-picker)$`,
+                `keyword layerrule animation fade, match:namespace ^ano-shell-background$`
+            ]);
+        }
     }
 
     function requestReloadHyprRules(): void {

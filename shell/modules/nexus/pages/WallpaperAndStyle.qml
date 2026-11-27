@@ -254,7 +254,7 @@ PageBase {
             subtext: ({
                     classic: I18n.tr("Verre teinté et flouté : le bon compromis"),
                     ios: I18n.tr("Verre clair façon iOS 26 : on voit le fond à travers"),
-                    off: I18n.tr("Panneaux opaques de Caelestia (les notifications restent en verre)")
+                    off: I18n.tr("Panneaux opaques (les notifications restent en verre)")
                 })[Glass.shellMode] ?? ""
             menuItems: root.shellItems
             active: root.shellItems[Math.max(0, root.shellModes.indexOf(Glass.shellMode))]

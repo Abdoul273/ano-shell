@@ -204,9 +204,11 @@ Item {
     onBatteryShownChanged: BatteryInfo.consumersRefs += batteryShown ? 1 : -1
 
     function appName(key: string): string {
-        const special = ({ quickshell: "Caelestia", qs: "Caelestia", Hyprland: "Hyprland", kitty: "Terminal (kitty)", claude: "Claude Code", node: "Node.js", pipewire: "Son (PipeWire)", wireplumber: "Son (PipeWire)" })[key];
+        const special = ({ quickshell: "Ano Shell", qs: "Ano Shell", "ano-shell": "Ano Shell", Hyprland: "Hyprland", kitty: "Terminal (kitty)", claude: "Claude Code", node: "Node.js", pipewire: "Son (PipeWire)", wireplumber: "Son (PipeWire)" })[key];
         if (special)
             return special;
+        if (key.startsWith("ano-"))
+            return "Ano Shell";
         const e = DesktopEntries.byId(key) ?? DesktopEntries.heuristicLookup(key);
         return e?.name || (key.charAt(0).toUpperCase() + key.slice(1));
     }

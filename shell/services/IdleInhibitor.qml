@@ -116,7 +116,7 @@ Singleton {
             implicitWidth: 1
             implicitHeight: 1
             exclusionMode: ExclusionMode.Ignore
-            WlrLayershell.namespace: "caelestia-idleinhibitor"
+            WlrLayershell.namespace: "ano-shell-idleinhibitor"
             anchors.top: true
             anchors.left: true
             color: "transparent"

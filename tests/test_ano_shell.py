@@ -229,3 +229,16 @@ def test_custom_shortcut_registers_primary_and_legacy_appids():
         assert f'name: "{name}"' in shortcuts, f"Raccourci {name} manquant dans Shortcuts.qml"
 
 
+def test_layer_namespace_matches_blur_rules_and_no_caelestia_branding():
+    """StyledWindow et Colours.qml doivent partager le même namespace ano-shell-* pour le flou Hyprland."""
+    sw = (ROOT / "shell/components/containers/StyledWindow.qml").read_text(encoding="utf-8")
+    colours = (ROOT / "shell/services/Colours.qml").read_text(encoding="utf-8")
+    assert "`ano-shell-${name}`" in sw
+    assert "ano-shell-drawers" in colours
+    cc = (ROOT / "shell/modules/controlcenter/ControlCenter.qml").read_text(encoding="utf-8")
+    assert 'quickshell: "Ano Shell"' in cc
+    about = (ROOT / "shell/modules/nexus/pages/AboutPage.qml").read_text(encoding="utf-8")
+    assert 'text: "Ano Shell"' in about
+
+
+
