@@ -45,25 +45,24 @@ jobs:
           INPUT_PKGVER: ${{ github.event.inputs.pkgver }}
         run: |
           set -euo pipefail
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           useradd -m builder
           mkdir -p /tmp/pkgbuild /tmp/repo/x86_64
 
-          # Determine package version (tag vX.Y.Z -> X.Y.Z, otherwise pkgver.r<count>.g<sha>)
+          # Determine package version (tag vX.Y.Z -> X.Y.Z, otherwise pkgver.r<run>.g<sha>)
           if [[ -n "$INPUT_PKGVER" ]]; then
             PKGVER="$INPUT_PKGVER"
           elif [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
             PKGVER="${GITHUB_REF#refs/tags/v}"
           else
             BASE_VER="$(sed -n 's/^pkgver=//p' packaging/aur/PKGBUILD | head -n1)"
-            REV_CNT="$(git rev-list --count HEAD)"
-            REV_SHA="$(git rev-parse --short HEAD)"
-            PKGVER="${BASE_VER}.r${REV_CNT}.g${REV_SHA}"
+            PKGVER="${BASE_VER}.r${GITHUB_RUN_NUMBER}.g${GITHUB_SHA:0:7}"
           fi
           echo "Building ano-shell ${PKGVER}"
 
-          # Build local source tarball matching PKGBUILD layout
-          git archive --format=tar.gz --prefix="ano-shell-${PKGVER}/" HEAD > "/tmp/pkgbuild/ano-shell-${PKGVER}.tar.gz"
+          # Build source tarball directly (actions/checkout in archlinux container has no .git)
+          tar --exclude='./.git' --exclude='./_site' --exclude='./build' \
+            -czf "/tmp/pkgbuild/ano-shell-${PKGVER}.tar.gz" \
+            --transform "s,^\.,ano-shell-${PKGVER}," .
           cp packaging/aur/PKGBUILD packaging/aur/ano-shell.install /tmp/pkgbuild/
 
           # Adapt PKGBUILD for pure official Arch repos (move any AUR-only dep to optdepends so `pacman -S ano-shell` never fails on vanilla Arch)
