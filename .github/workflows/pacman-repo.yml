@@ -40,9 +40,12 @@ jobs:
             python python-build python-installer python-setuptools python-wheel
 
       - name: Build Arch binary package (.pkg.tar.zst)
+        shell: bash
         env:
           INPUT_PKGVER: ${{ github.event.inputs.pkgver }}
         run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           useradd -m builder
           mkdir -p /tmp/pkgbuild /tmp/repo/x86_64
 
