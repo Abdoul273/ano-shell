@@ -25,8 +25,12 @@ if(NOT DEFINED GIT_REVISION)
 endif()
 
 string(REGEX REPLACE "^v" "" VERSION "${VERSION}")
+string(REGEX MATCH "^[0-9]+(\\.[0-9]+){0,3}" _PROJECT_NUM_VERSION "${VERSION}")
+if("${_PROJECT_NUM_VERSION}" STREQUAL "")
+    set(_PROJECT_NUM_VERSION "1.0.0")
+endif()
 
-project(ano-shell VERSION ${VERSION} LANGUAGES CXX)
+project(ano-shell VERSION ${_PROJECT_NUM_VERSION} LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
