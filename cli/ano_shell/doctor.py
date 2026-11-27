@@ -64,9 +64,23 @@ def run_doctor(quiet: bool = False) -> int:
 
     # 2. Plugins C++ AnoShell
     qml_dir = Path("/usr/lib/qt6/qml/AnoShell")
+    required_modules = (
+        "qmldir",
+        "Blobs/qmldir",
+        "Components/qmldir",
+        "Config/qmldir",
+        "Images/qmldir",
+        "Internal/qmldir",
+        "Models/qmldir",
+        "Services/qmldir",
+        "Shapes/qmldir",
+    )
     if not qml_dir.is_dir():
         warn("Plugins C++ /usr/lib/qt6/qml/AnoShell non encore installés (lancez `makepkg -si` ou cmake --install).")
     else:
+        missing_mods = [m for m in required_modules if not (qml_dir / m).is_file()]
+        if missing_mods:
+            err("Modules QML AnoShell manquants : " + ", ".join(missing_mods) + " (relancez `./install --rebuild`).")
         so_files = sorted(qml_dir.rglob("*.so"))
         broken = []
         for so in so_files:
@@ -76,8 +90,8 @@ def run_doctor(quiet: bool = False) -> int:
                     broken.append(f"{so.name}: {line.strip()}")
         if broken:
             err("Bibliothèques manquantes dans les plugins AnoShell : " + " ; ".join(broken))
-        else:
-            ok(f"{len(so_files)} plugins C++ AnoShell vérifiés (0 lib manquante)")
+        elif not missing_mods:
+            ok(f"{len(so_files)} plugins C++ AnoShell vérifiés (0 lib manquante, Shapes OK)")
 
     # 3. Fichiers JSON utilisateur
     if app_config_dir.is_dir():

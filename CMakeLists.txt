@@ -109,13 +109,24 @@ if("shapes" IN_LIST ENABLE_MODULES)
     message(STATUS "Fetching AnoShell.Shapes (m3shapes) module")
     include(FetchContent)
     set(M3SHAPES_REV bdc327b29f95394a732baf3c9b19658ba23755b6)
+    set(M3SHAPES_SRC "${CMAKE_BINARY_DIR}/_deps/m3shapes-${M3SHAPES_REV}")
+    set(M3SHAPES_PATCHER "${CMAKE_SOURCE_DIR}/cmake/patch_m3shapes.py")
     FetchContent_Declare(
         m3shapes_external
         GIT_REPOSITORY https://github.com/soramanew/m3shapes.git
         GIT_TAG        ${M3SHAPES_REV}
-        SOURCE_DIR     "${CMAKE_BINARY_DIR}/_deps/m3shapes-${M3SHAPES_REV}"
-        PATCH_COMMAND  python3 -c "from pathlib import Path; p=Path('CMakeLists.txt'); s=p.read_text(); s=s.replace('URI M3Shapes','URI AnoShell.Shapes').replace('/M3Shapes','/AnoShell/Shapes'); p.write_text(s)"
+        SOURCE_DIR     "${M3SHAPES_SRC}"
+        PATCH_COMMAND  python3 "${M3SHAPES_PATCHER}" "${M3SHAPES_SRC}/CMakeLists.txt"
     )
+    if(EXISTS "${M3SHAPES_SRC}/CMakeLists.txt")
+        execute_process(
+            COMMAND python3 "${M3SHAPES_PATCHER}" "${M3SHAPES_SRC}/CMakeLists.txt"
+            RESULT_VARIABLE _m3shapes_patch_rc
+        )
+        if(NOT _m3shapes_patch_rc EQUAL 0)
+            message(FATAL_ERROR "Échec du patch AnoShell.Shapes sur ${M3SHAPES_SRC}/CMakeLists.txt")
+        endif()
+    endif()
     FetchContent_MakeAvailable(m3shapes_external)
 
     if(TARGET m3shapesplugin)

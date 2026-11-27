@@ -18,7 +18,7 @@ jobs:
       - name: Verify CLI package builds cleanly
         run: python -m build --wheel --no-isolation --outdir /tmp/ano-wheel cli
       - name: Lint CLI & tests with ruff
-        run: ruff check cli/ tests/ tools/
+        run: ruff check cli/ tests/ tools/ cmake/
       - name: Compile-check and lint bin/ Python scripts
         run: |
           python3 - << 'EOF'
@@ -66,3 +66,5 @@ jobs:
         run: |
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
           cmake --build build
+          test -f build/qml/AnoShell/Shapes/qmldir
+          grep -q "^module AnoShell\.Shapes$" build/qml/AnoShell/Shapes/qmldir

@@ -252,8 +252,8 @@ build_cpp_plugins() {
     if (( NO_BUILD )); then
         return
     fi
-    if [[ -d /usr/lib/qt6/qml/AnoShell ]] && (( ! REBUILD )); then
-        ok "Plugins C++ AnoShell.* déjà installés (utilisez --rebuild pour recompiler)"
+    if [[ -d /usr/lib/qt6/qml/AnoShell ]] && [[ -f /usr/lib/qt6/qml/AnoShell/Shapes/qmldir ]] && (( ! REBUILD )); then
+        ok "Plugins C++ AnoShell.* et AnoShell.Shapes déjà installés (utilisez --rebuild pour recompiler)"
         return
     fi
     step "Compilation et installation des plugins C++ natifs (AnoShell.* + AnoShell.Shapes + shaders)"
