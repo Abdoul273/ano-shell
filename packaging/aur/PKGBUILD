@@ -1,7 +1,7 @@
 # Maintainer: Abdoul Goudousse Diallo <abdoulgoudoussediallo25@gmail.com>
 
 pkgname=ano-shell
-pkgver=1.0.0
+pkgver=1.2.0
 pkgrel=1
 pkgdesc='Standalone Liquid Glass desktop shell for Hyprland (Quickshell + native Qt6 C++ plugins + CLI + Onde CLI)'
 arch=('x86_64' 'aarch64')
@@ -22,6 +22,7 @@ depends=(
     'qt6-imageformats'
     'qt6-multimedia'
     'qt6-multimedia-ffmpeg'
+    'qt6-quick3d'
     'pipewire'
     'pipewire-pulse'
     'pipewire-alsa'

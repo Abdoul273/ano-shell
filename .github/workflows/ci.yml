@@ -15,9 +15,52 @@ jobs:
           python-version: "3.12"
       - name: Install dev tools
         run: python -m pip install ruff pytest pillow materialyoucolor
-      - name: Lint CLI with ruff
-        run: ruff check cli/ tests/
-      - name: Syntax check scripts
-        run: bash -n bootstrap.sh install uninstall
+      - name: Lint CLI & tests with ruff
+        run: ruff check cli/ tests/ tools/
+      - name: Compile-check and lint bin/ Python scripts
+        run: |
+          python3 - << 'EOF'
+          import pathlib, py_compile, subprocess, sys
+          py_bins = [
+              p for p in sorted(pathlib.Path("bin").iterdir())
+              if p.is_file() and p.read_bytes().startswith(b"#!/usr/bin/env python3")
+          ]
+          for path in py_bins:
+              py_compile.compile(str(path), doraise=True)
+          res = subprocess.run(
+              ["ruff", "check", "--select", "E9,F63,F7,F82", *[str(p) for p in py_bins]],
+              check=False,
+          )
+          sys.exit(res.returncode)
+          EOF
+      - name: Syntax check shell scripts
+        run: |
+          bash -n bootstrap.sh install uninstall \
+            bin/bt-audio-autoswitch bin/ano-quit-app \
+            config/sddm/install-login-screen
+          sh -n bin/ano-animwall bin/ano-logout bin/swappy
+      - name: Verify no hardcoded local home paths
+        run: |
+          if git grep -nE '/home/[a-zA-Z0-9._-]+/' -- ':!*.md' ':!.github/*' ':!tools/sync-repos.py'; then
+            echo "Found hardcoded /home/<user>/ path. Use \$HOME or Path.home() instead."
+            exit 1
+          fi
       - name: Run pytest suite
         run: pytest -q tests/
+
+  build-cpp-plugin:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Qt6 & build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel cmake ninja git \
+            qt6-base qt6-declarative qt6-shadertools \
+            fftw libpipewire libqalculate lm_sensors
+      - name: Configure and build C++ Qt6 plugins
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+          cmake --build build
