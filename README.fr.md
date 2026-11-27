@@ -139,9 +139,9 @@ Tape cette unique commande puis appuie sur **Entrée** :
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Abdoul273/ano-shell/main/bootstrap.sh | bash
-# Ou via AUR (installe Hyprland, Kitty, Fastfetch, Nautilus, GTK, Fish, Starship et SDDM automatiquement) :
-yay -S ano-shell && ano-shell setup
 ```
+
+*(Ou construis et installe le paquet Arch localement via `cd packaging/aur && makepkg -si && ano-shell setup`.)*
 
 > **100 % bilingue FR / EN :** l'installeur détecte automatiquement la langue du système et te propose **English** ou **Français** (ou `--lang fr` / `--lang en`). Change de langue à tout moment via `ano-shell lang fr|en|auto` ou **Paramètres (`Super + I`) → Langue et région**.
 

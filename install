@@ -616,6 +616,11 @@ fi
 if [[ -d "$ROOT/config/kitty" ]]; then
     install_item "config/kitty" "$HOME/.config/kitty"
     if (( ! DRY_RUN )) && [[ -f "$HOME/.config/kitty/kitty.conf" ]]; then
+        # Launch Fish + Starship automatically in Kitty when fish is available
+        if command -v fish >/dev/null 2>&1; then
+            fish_bin="$(command -v fish)"
+            sed -i "s|^# shell :.*|shell ${fish_bin}|" "$HOME/.config/kitty/kitty.conf"
+        fi
         # Adapt visual window select keys to keyboard layout (AZERTY vs QWERTY)
         if [[ "$KB_LAYOUT" != "fr" && "$KB_LAYOUT" != "be" ]]; then
             sed -i 's/^visual_window_select_characters .*/visual_window_select_characters QWERTYUIOPASDFGHJKLZ/' "$HOME/.config/kitty/kitty.conf"
