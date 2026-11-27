@@ -190,3 +190,31 @@ def test_standalone_arch_and_conf_hyprland_ready():
     for pkg in ("python-gobject", "gtk4", "jq", "psmisc", "libxml2", "wtype", "ydotool", "sound-theme-freedesktop", "hyprsunset"):
         assert pkg in install_sh, f"Paquet manquant dans install : {pkg}"
     assert "s|@HOME@|$HOME|g" in install_sh
+
+
+def test_no_qml_singleton_shadowing_on_instantiation():
+    """Aucun composant QML instancié sans préfixe ne doit entrer en collision avec un Singleton qs.* importé (Qt 6.12+)."""
+    shell_root = ROOT / "shell"
+    mod_singletons: dict[str, set[str]] = {}
+    for qml in shell_root.rglob("*.qml"):
+        head = qml.read_text(encoding="utf-8")[:500]
+        if "pragma Singleton" in head:
+            rel_dir = qml.parent.relative_to(shell_root)
+            mod = "qs" if str(rel_dir) == "." else "qs." + ".".join(rel_dir.parts)
+            mod_singletons.setdefault(mod, set()).add(qml.stem)
+
+    collisions: list[str] = []
+    for qml in sorted(shell_root.rglob("*.qml")):
+        txt = re.sub(r"//.*", "", qml.read_text(encoding="utf-8"))
+        imported_singletons: set[str] = set()
+        for m in re.finditer(r"^import\s+(qs(?:\.[A-Za-z0-9_]+)*)(?:\s+as\s+([A-Za-z0-9_]+))?", txt, re.MULTILINE):
+            mod, alias = m.group(1), m.group(2)
+            if not alias:
+                imported_singletons |= mod_singletons.get(mod, set())
+        inline_comps = set(re.findall(r"\bcomponent\s+([A-Z][A-Za-z0-9_]*)\s*:", txt))
+        for inst in set(re.findall(r"(?<![.\w])([A-Z][A-Za-z0-9_]*)\s*\{", txt)) - inline_comps:
+            if inst in imported_singletons:
+                collisions.append(f"{qml.relative_to(shell_root)} instancie `{inst} {{}}` alors que `{inst}` est un Singleton importé")
+
+    assert not collisions, "\n".join(collisions)
+

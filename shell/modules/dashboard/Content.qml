@@ -242,7 +242,7 @@ Item {
             Component {
                 id: notesComponent
 
-                Notes {
+                NotesTab {
                     screenState: root.screenState
                 }
             }
