@@ -180,6 +180,7 @@ def test_bare_arch_bundle_complete_and_clean():
     """Vérifie la présence d'onde-cli, fastfetch, fish, starship, kitty, bootstrap.sh et 0 chemin personnel."""
     required = [
         ROOT / "bootstrap.sh",
+        ROOT / "plugin/src/AnoShell/CMakeLists.txt",
         ROOT / "extras/onde-cli/onde-cli",
         ROOT / "extras/onde-cli/onde/cli.py",
         ROOT / "config/fastfetch/config.jsonc",

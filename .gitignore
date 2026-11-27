@@ -1,4 +1,4 @@
-build/
+/build/
 _deps/
 __pycache__/
 *.pyc
@@ -6,8 +6,9 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 *.egg-info/
-dist/
+/cli/build/
+/cli/dist/
 *.pkg.tar.*
-pkg/
-src/
+/packaging/aur/pkg/
+/packaging/aur/src/
 .DS_Store

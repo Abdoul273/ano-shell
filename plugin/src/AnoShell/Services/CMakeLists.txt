@@ -1,0 +1,30 @@
+qml_module(anoshell-services
+    URI AnoShell.Services
+    SOURCES
+        service.cpp
+        serviceref.cpp
+        beattracker.cpp
+        audiocollector.cpp
+        audioprovider.cpp
+        cavaprovider.cpp
+        tickingservice.cpp
+        sensorslib.cpp
+        usagefmt.cpp
+        cpu.cpp
+        gpu.cpp
+        memory.cpp
+        diskinfo.cpp
+        storage.cpp
+        lyriccandidate.cpp
+        lyrics.cpp
+        sessionmanager.cpp
+        systemwatch.cpp
+    LIBRARIES
+        Qt::DBus
+        PkgConfig::Pipewire
+        PkgConfig::Fftw3
+        Sensors::Sensors
+        anoshell-core
+        anoshell-config
+        anoshell-internal
+)
