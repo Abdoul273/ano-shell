@@ -61,6 +61,8 @@ def test_native_tool_declarations_valid_for_gemini():
         "system_control",
         "run_shell",
         "agent_dispatch",
+        "agent_set_model",
+        "agent_list_models",
         "agent_send",
         "agent_close",
         "agent_detail",
@@ -68,10 +70,77 @@ def test_native_tool_declarations_valid_for_gemini():
         "memory_search",
     ):
         assert required in names, f"Outil natif manquant : {required}"
+    send_decl = next(d for d in decls if d["name"] == "agent_send")
+    assert "/set model" not in send_decl["description"]
     for d in decls:
         assert d.get("description")
         if "parameters" in d:
             _check_gemini_schema(d["parameters"])
+
+
+def test_resolve_agy_models_and_efforts():
+    mod = _load_agents()
+    catalog = mod._AGY_FALLBACK_MODELS
+
+    # Faute courante + effort en français ("hydrogent en effort moyen")
+    r1 = mod.resolve_agent_model("agy", "hydrogent", "moyen", agy_models=catalog)
+    assert r1["ok"] is True
+    assert r1["display"] == "Gemini 4 Hydrogen (Medium)"
+    assert r1["slug"] == "gemini-4-hydrogen-medium"
+    assert r1["slash_cmd"] == "/model Gemini 4 Hydrogen (Medium)"
+
+    # Tout dans le champ model
+    r2 = mod.resolve_agent_model("agy", "hydrogen en effort moyen", "", agy_models=catalog)
+    assert r2["ok"] is True and r2["slash_cmd"] == "/model Gemini 4 Hydrogen (Medium)"
+
+    # Changement d'effort depuis un modèle déjà doté d'un effort entre parenthèses
+    r3 = mod.resolve_agent_model("agy", "Gemini 4 Neon (High)", "faible", agy_models=catalog)
+    assert r3["ok"] is True and r3["display"] == "Gemini 4 Neon (Low)"
+
+    # XHigh vs modèles sans XHigh (Carbon -> High)
+    r4 = mod.resolve_agent_model("agy", "neon", "xhigh", agy_models=catalog)
+    assert r4["ok"] is True and r4["display"] == "Gemini 4 Neon (XHigh)"
+    r5 = mod.resolve_agent_model("agy", "carbon", "max", agy_models=catalog)
+    assert r5["ok"] is True and r5["display"] == "Gemini 4 Carbon (High)"
+
+    # Claude Opus / Orchestrator / Flash
+    r6 = mod.resolve_agent_model("agy", "opus", "high", agy_models=catalog)
+    assert r6["ok"] is True and r6["display"] == "Claude Opus 5.5 (High)"
+    r7 = mod.resolve_agent_model("agy", "orchestrator neon", "", agy_models=catalog)
+    assert r7["ok"] is True and r7["display"] == "Orchestrator (Neon)"
+    r8 = mod.resolve_agent_model("agy", "flash", "low", agy_models=catalog)
+    assert r8["ok"] is True and r8["display"] == "Gemini 3.8 Flash (Low)"
+
+    # Modèle inexistant -> échec propre
+    bad = mod.resolve_agent_model("agy", "modele-imaginaire-xyz", "medium", agy_models=catalog)
+    assert bad["ok"] is False
+
+
+def test_parse_agy_models_output():
+    mod = _load_agents()
+    raw = "\r⠋ Fetching available models...\rgemini-4-hydrogen-medium       Gemini 4 Hydrogen (Medium)\ngemini-4-neon-high             Gemini 4 Neon (High)\n"
+    parsed = mod._parse_agy_models_output(raw)
+    assert parsed == [
+        ("gemini-4-hydrogen-medium", "Gemini 4 Hydrogen (Medium)"),
+        ("gemini-4-neon-high", "Gemini 4 Neon (High)"),
+    ]
+
+
+def test_other_engines_model_resolution_and_guardrails():
+    mod = _load_agents()
+    rc = mod.resolve_agent_model("claude", "opus", "moyen")
+    assert rc["ok"] is True and rc["slash_cmd"] == "/model opus" and rc["effort"] == "medium"
+
+    rx = mod.resolve_agent_model("codex", "gpt-5.6-terra", "haut")
+    assert rx["ok"] is True and rx["slug"] == "gpt-5.6-terra" and rx["effort"] == "high"
+
+    rp = mod.resolve_agent_model("copilot", "gpt-5.6-sol", "high")
+    assert rp["ok"] is True and rp["slash_cmd"] == "/model gpt-5.6-sol"
+
+    # Antigravity App (GUI Electron) : honnête (ne prétend pas avoir changé le menu déroulant)
+    ag_res = mod.set_agent_model("hydrogen", effort="moyen", kind="antigravity")
+    assert ag_res["ok"] is False
+    assert "Gemini 4 Hydrogen (Medium)" in ag_res["detail"]
 
 
 def test_sanitize_schema_handles_empty_objects_and_arrays():

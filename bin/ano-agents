@@ -1705,7 +1705,7 @@ def clean_launch_prompt(prompt):
     return p
 
 
-def dispatch_agent(kind, cwd="", prompt=""):
+def dispatch_agent(kind, cwd="", prompt="", model="", effort=""):
     target = cwd if cwd and os.path.isdir(cwd) else str(HOME)
     prompt = clean_launch_prompt(prompt)
     if kind == "antigravity":
@@ -1725,18 +1725,47 @@ def dispatch_agent(kind, cwd="", prompt=""):
     exe = cmds.get(kind)
     if not exe:
         sys.exit(2)
+
+    flags = []
+    if model or effort:
+        resolved = resolve_agent_model(kind, model, effort)
+        if resolved.get("ok"):
+            slug = resolved.get("slug") or ""
+            eff = resolved.get("effort") or ""
+            if kind == "agy":
+                if slug:
+                    flags.extend(["--model", shlex.quote(slug)])
+                elif eff:
+                    flags.extend(["--effort", shlex.quote(eff)])
+            elif kind == "claude":
+                if slug:
+                    flags.extend(["--model", shlex.quote(slug)])
+                if eff:
+                    flags.extend(["--effort", shlex.quote(eff)])
+            elif kind == "codex":
+                if slug:
+                    flags.extend(["-m", shlex.quote(slug)])
+                if eff:
+                    flags.extend(["-c", shlex.quote(f'model_reasoning_effort="{eff}"')])
+            elif kind == "copilot":
+                if slug:
+                    flags.extend(["--model", shlex.quote(slug)])
+                if eff:
+                    flags.extend(["--reasoning-effort", shlex.quote(eff)])
+
+    base_cmd = " ".join([exe, *flags])
     if prompt:
         q = shlex.quote(prompt)
         if kind in ("agy", "copilot"):
-            run_str = f"{exe} -i {q}"
+            run_str = f"{base_cmd} -i {q}"
         elif kind == "opencode":
-            run_str = f"{exe} --prompt {q} {shlex.quote(target)}"
+            run_str = f"{base_cmd} --prompt {q} {shlex.quote(target)}"
         elif kind == "aider":
-            run_str = f"{exe} --message {q}"
+            run_str = f"{base_cmd} --message {q}"
         else:
-            run_str = f"{exe} {q}"
+            run_str = f"{base_cmd} {q}"
     else:
-        run_str = f"{exe} {shlex.quote(target)}" if kind == "opencode" else exe
+        run_str = f"{base_cmd} {shlex.quote(target)}" if kind == "opencode" else base_cmd
     term = shutil.which("kitty") or shutil.which("foot") or shutil.which("alacritty")
     if not term:
         sys.exit(1)
@@ -1802,6 +1831,21 @@ def find_kitty_window_id(kitty_pid, agent_pid, procs):
     return sock, fallback_id
 
 
+def read_kitty_screen(kitty_pid, agent_pid, procs):
+    """Lit le texte actuellement affiché dans la fenêtre Kitty qui héberge l'agent."""
+    sock, wid = find_kitty_window_id(kitty_pid, agent_pid, procs)
+    if wid is None:
+        return None, None, ""
+    try:
+        r = subprocess.run(
+            ["kitten", "@", "--to", sock, "get-text", "--match", f"id:{wid}", "--extent=screen"],
+            capture_output=True, text=True, timeout=2, check=False,
+        )
+        return sock, wid, (r.stdout if r.returncode == 0 else "")
+    except (OSError, subprocess.TimeoutExpired):
+        return sock, wid, ""
+
+
 def send_via_kitty(kitty_pid, agent_pid, procs, message):
     sock, wid = find_kitty_window_id(kitty_pid, agent_pid, procs)
     if wid is None:
@@ -1813,7 +1857,7 @@ def send_via_kitty(kitty_pid, agent_pid, procs, message):
         )
         if r1.returncode != 0:
             return False, (r1.stderr or "Erreur kitty send-text").strip()[:120]
-        time.sleep(0.08)
+        time.sleep(0.10)
         subprocess.run(
             ["kitten", "@", "--to", sock, "send-text", "--match", f"id:{wid}", "\r"],
             capture_output=True, timeout=2, check=False,
@@ -1821,6 +1865,661 @@ def send_via_kitty(kitty_pid, agent_pid, procs, message):
         return True, f"Envoyé en direct au terminal (Kitty #{wid})"
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, str(exc)
+
+
+# ───────────────────────── Modèles & effort par agent ─────────────────────────
+
+_AGY_FALLBACK_MODELS = [
+    ("gemini-4-neon-high", "Gemini 4 Neon (High)"),
+    ("gemini-4-neon-xhigh", "Gemini 4 Neon (XHigh)"),
+    ("gemini-4-neon-medium", "Gemini 4 Neon (Medium)"),
+    ("gemini-4-neon-low", "Gemini 4 Neon (Low)"),
+    ("gemini-4-carbon-high", "Gemini 4 Carbon (High)"),
+    ("gemini-4-carbon-medium", "Gemini 4 Carbon (Medium)"),
+    ("gemini-4-carbon-low", "Gemini 4 Carbon (Low)"),
+    ("gemini-4-argon-high", "Gemini 4 Argon (High)"),
+    ("gemini-4-argon-medium", "Gemini 4 Argon (Medium)"),
+    ("gemini-4-argon-low", "Gemini 4 Argon (Low)"),
+    ("gemini-4-hydrogen-high", "Gemini 4 Hydrogen (High)"),
+    ("gemini-4-hydrogen-xhigh", "Gemini 4 Hydrogen (XHigh)"),
+    ("gemini-4-hydrogen-medium", "Gemini 4 Hydrogen (Medium)"),
+    ("gemini-4-hydrogen-low", "Gemini 4 Hydrogen (Low)"),
+    ("gemini-pro-orchestrator-neon", "Orchestrator (Neon)"),
+    ("gemini-pro-orchestrator", "Orchestrator (Carbon)"),
+    ("gemini-pro-orchestrator-argon", "Orchestrator (Argon)"),
+    ("gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"),
+    ("gemini-3.8-flash-medium", "Gemini 3.8 Flash (Medium)"),
+    ("gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"),
+    ("claude-opus-5-5-low", "Claude Opus 5.5 (Low)"),
+    ("claude-opus-5-5-medium", "Claude Opus 5.5 (Medium)"),
+    ("claude-opus-5-5-high", "Claude Opus 5.5 (High)"),
+    ("claude-sonnet-5-5-low", "Claude Sonnet 5.5 (Low)"),
+    ("claude-sonnet-5-5-medium", "Claude Sonnet 5.5 (Medium)"),
+    ("claude-sonnet-5-5-high", "Claude Sonnet 5.5 (High)"),
+    ("gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"),
+]
+
+_EFFORT_SYNONYMS = {
+    "none": "none", "aucun": "none", "zero": "none", "off": "none",
+    "minimal": "minimal", "min": "minimal", "minimum": "minimal",
+    "low": "low", "faible": "low", "bas": "low", "basse": "low", "leger": "low", "legere": "low", "rapide": "low", "light": "low",
+    "medium": "medium", "med": "medium", "moyen": "medium", "moyenne": "medium", "normal": "medium", "normale": "medium", "equilibre": "medium", "balanced": "medium",
+    "high": "high", "haut": "high", "haute": "high", "eleve": "high", "elevee": "high", "fort": "high", "forte": "high", "pousse": "high",
+    "xhigh": "xhigh", "extra": "xhigh", "extra-high": "xhigh", "extrahigh": "xhigh", "tres haut": "xhigh", "tres eleve": "xhigh", "tres fort": "xhigh", "ultra": "xhigh",
+    "max": "max", "maximum": "max", "maximal": "max", "maximale": "max",
+}
+
+_EFFORT_TITLES = {"low": "Low", "medium": "Medium", "high": "High", "xhigh": "XHigh", "max": "Max"}
+
+
+def _normalize_effort(raw):
+    s = _fold_text(raw).strip()
+    if not s:
+        return ""
+    if s in _EFFORT_SYNONYMS:
+        return _EFFORT_SYNONYMS[s]
+    # Recherche d'un mot-clé d'effort dans une phrase libre (ex. "effort moyen")
+    for key in sorted(_EFFORT_SYNONYMS, key=len, reverse=True):
+        if re.search(rf"\b{re.escape(key)}\b", s):
+            return _EFFORT_SYNONYMS[key]
+    return ""
+
+
+def _parse_agy_models_output(raw_text):
+    """Parse la sortie de `agy models` en liste [(slug, display_name), ...]."""
+    clean = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", raw_text or "")
+    models = []
+    seen = set()
+    for line in clean.replace("\r", "\n").splitlines():
+        line = line.strip()
+        if not line or "Fetching available models" in line:
+            continue
+        m = re.match(r"^([a-z0-9][a-z0-9._-]{2,})\s{2,}(.+?)\s*$", line)
+        if m:
+            slug, label = m.group(1).strip(), m.group(2).strip()
+            if slug not in seen:
+                seen.add(slug)
+                models.append((slug, label))
+    return models
+
+
+def list_agy_models(force_refresh=False):
+    """Récupère la vraie liste des modèles `agy models` avec cache disque 10 min."""
+    cache_path = HOME / ".cache/ano-shell/agy-models-cache.json"
+    now = time.time()
+    if not force_refresh and cache_path.is_file():
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            if isinstance(cached, dict) and now - float(cached.get("ts") or 0) < 600:
+                items = cached.get("models")
+                if isinstance(items, list) and items:
+                    return [(str(a), str(b)) for a, b in items]
+        except (OSError, ValueError, TypeError):
+            pass
+
+    agy_bin = shutil.which("agy")
+    if agy_bin:
+        try:
+            r = subprocess.run([agy_bin, "models"], capture_output=True, text=True, timeout=10, check=False)
+            parsed = _parse_agy_models_output((r.stdout or "") + "\n" + (r.stderr or ""))
+            if parsed:
+                try:
+                    cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    tmp = cache_path.with_suffix(".tmp")
+                    tmp.write_text(json.dumps({"ts": now, "models": parsed}, ensure_ascii=False), encoding="utf-8")
+                    tmp.replace(cache_path)
+                except OSError:
+                    pass
+                return parsed
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return list(_AGY_FALLBACK_MODELS)
+
+
+def list_opencode_models():
+    cache_path = HOME / ".cache/ano-shell/opencode-models-cache.json"
+    now = time.time()
+    if cache_path.is_file():
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            if isinstance(cached, dict) and now - float(cached.get("ts") or 0) < 600 and cached.get("models"):
+                return list(cached["models"])
+        except (OSError, ValueError, TypeError):
+            pass
+    oc_bin = shutil.which("opencode")
+    if oc_bin:
+        try:
+            r = subprocess.run([oc_bin, "models"], capture_output=True, text=True, timeout=6, check=False)
+            items = [ln.strip() for ln in (r.stdout or "").splitlines() if "/" in ln and not ln.strip().startswith("INFO")]
+            if items:
+                try:
+                    cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    cache_path.write_text(json.dumps({"ts": now, "models": items}, ensure_ascii=False), encoding="utf-8")
+                except OSError:
+                    pass
+                return items
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return []
+
+
+def _extract_model_and_effort(model_query, effort_query):
+    """Sépare proprement le nom de modèle et l'effort même si tout a été mis dans `model_query`."""
+    eff = _normalize_effort(effort_query)
+    raw = str(model_query or "").strip()
+    if raw:
+        # Si un effort explicite est fourni, retirer un ancien effort entre parenthèses ex. "Gemini 4 Neon (High)"
+        m_par = re.search(r"\(([^)]+)\)", raw)
+        if m_par:
+            cand = _normalize_effort(m_par.group(1))
+            if cand:
+                if not eff:
+                    eff = cand
+                raw = (raw[: m_par.start()] + " " + raw[m_par.end() :]).strip()
+        if not eff:
+            m_tail = re.search(
+                r"\b(?:effort\s+|en\s+)?(xhigh|extra[- ]?high|tres\s+haut|tres\s+eleve|max(?:imum)?|high|haut(?:e)?|eleve(?:e)?|fort(?:e)?|medium|moyen(?:ne)?|low|faible|bas(?:se)?|minimal)\s*$",
+                _fold_text(raw),
+            )
+            if m_tail:
+                eff = _normalize_effort(m_tail.group(1))
+                # Retirer les derniers mots d'effort de la requête modèle
+                raw = re.sub(
+                    r"\s*(?:\ben\b\s*)?(?:\beffort\b\s*)?(?:xhigh|extra[- ]?high|tr[eè]s\s+(?:haut|élevé|eleve)|max(?:imum)?|high|haute?|élevée?|elevee?|forte?|medium|moyenne?|low|faible|basse?|minimal)\s*$",
+                    "",
+                    raw,
+                    flags=re.IGNORECASE,
+                ).strip()
+    return raw.strip(" -_():"), eff
+
+
+def resolve_agent_model(kind, model_query, effort_query="", agy_models=None):
+    """Résout une demande naturelle (ex. 'hydrogen', 'moyen') en modèle exact pour le moteur cible."""
+    k = str(kind or "agy").strip().lower()
+    model_clean, eff = _extract_model_and_effort(model_query, effort_query)
+    q_fold = _fold_text(model_clean)
+
+    if k in ("agy", "antigravity"):
+        catalog = agy_models if agy_models is not None else list_agy_models()
+        if not catalog:
+            return {"ok": False, "error": "Liste des modèles AGY indisponible."}
+
+        # Normalisation d'orthographe courante (hydrogent -> hydrogen, carbone -> carbon, sonet -> sonnet)
+        typo_map = {
+            "hydrogent": "hydrogen",
+            "hydrogene": "hydrogen",
+            "carbone": "carbon",
+            "néon": "neon",
+            "orchestrateur": "orchestrator",
+            "sonet": "sonnet",
+            "opuss": "opus",
+            "flash3": "3.8 flash",
+            "38": "3.8",
+        }
+        q_norm = q_fold
+        for bad, good in typo_map.items():
+            q_norm = re.sub(rf"\b{re.escape(bad)}\b", good, q_norm)
+
+        # Effort demandé : pour AGY, "max" mappe vers xhigh s'il existe, sinon high
+        wanted_eff = eff
+        if wanted_eff == "max":
+            wanted_eff = "xhigh"
+
+        # Correspondance exacte sur slug ou label (uniquement si aucun effort différent n'est demandé)
+        raw_full_fold = _fold_text(model_query)
+        for slug, label in catalog:
+            if raw_full_fold in (_fold_text(slug), _fold_text(label)):
+                m_e = re.search(r"\(([^)]+)\)", label)
+                eff_out = _normalize_effort(m_e.group(1)) if m_e else ""
+                if not wanted_eff or eff_out == wanted_eff:
+                    return {"ok": True, "slug": slug, "display": label, "effort": eff_out or wanted_eff, "slash_cmd": f"/model {label}"}
+
+        q_tokens = [t for t in re.split(r"[^a-z0-9.]+", q_norm) if t and t not in ("gemini", "modele", "model", "le", "la", "de", "du", "en", "effort", "sur")]
+        if not q_tokens and q_norm:
+            q_tokens = [t for t in re.split(r"[^a-z0-9.]+", q_norm) if t]
+
+        scored = []
+        for slug, label in catalog:
+            s_fold = _fold_text(slug)
+            l_fold = _fold_text(label)
+            m_par = re.search(r"\(([^)]+)\)", label)
+            entry_eff = _normalize_effort(m_par.group(1)) if m_par else ""
+            base_label = _fold_text(re.sub(r"\([^)]*\)", "", label))
+            base_slug = re.sub(r"-(low|medium|high|xhigh)$", "", s_fold)
+
+            score = 0
+            if not q_tokens:
+                # L'utilisateur a peut-être demandé uniquement un changement d'effort : on laisse l'appelant fournir le modèle courant
+                continue
+            matched_tokens = 0
+            for tok in q_tokens:
+                if tok in base_label.split() or tok in base_slug.split("-"):
+                    score += 30
+                    matched_tokens += 1
+                elif tok in l_fold or tok in s_fold:
+                    score += 18
+                    matched_tokens += 1
+                elif len(tok) >= 4 and any(w.startswith(tok[:4]) or tok.startswith(w[:4]) for w in base_slug.split("-") if len(w) >= 4):
+                    score += 10
+                    matched_tokens += 1
+            if matched_tokens == 0:
+                continue
+            if matched_tokens == len(q_tokens):
+                score += 25
+            # Éviter qu'un "neon" ou "argon" sélectionne "Orchestrator (Neon)" sauf si "orchestrator" demandé
+            if "orchestrator" in base_label and "orchestrator" not in q_norm:
+                score -= 22
+
+            if wanted_eff:
+                if entry_eff == wanted_eff:
+                    score += 40
+                elif eff == "max" and entry_eff == "high":
+                    score += 22
+                elif entry_eff:
+                    score -= 12
+            else:
+                # Par défaut préférer Medium / High (équilibré)
+                if entry_eff == "medium":
+                    score += 4
+                elif entry_eff == "high":
+                    score += 3
+
+            scored.append((score, slug, label, entry_eff))
+
+        if not scored:
+            sample = ", ".join(lbl for _, lbl in catalog[:10])
+            return {"ok": False, "error": f"Modèle « {model_query} » introuvable dans `agy models`. Exemples : {sample}"}
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        best_score, best_slug, best_label, best_eff = scored[0]
+        if best_score < 18:
+            sample = ", ".join(lbl for _, lbl in catalog[:10])
+            return {"ok": False, "error": f"Correspondance trop faible pour « {model_query} ». Modèles dispo : {sample}"}
+
+        # Si l'utilisateur demandait explicitement un effort précis (ex. xhigh) qui n'existe pas pour ce modèle (ex. carbon)
+        note = ""
+        if wanted_eff and best_eff and best_eff != wanted_eff:
+            note = f" (effort {wanted_eff} indisponible pour ce modèle, basculé sur {best_eff})"
+        return {
+            "ok": True,
+            "slug": best_slug,
+            "display": best_label,
+            "effort": best_eff or wanted_eff,
+            "slash_cmd": f"/model {best_label}",
+            "note": note,
+        }
+
+    if k == "claude":
+        alias_map = {
+            "opus": ("opus", "Claude Opus"),
+            "sonnet": ("sonnet", "Claude Sonnet"),
+            "haiku": ("haiku", "Claude Haiku"),
+        }
+        slug, display = model_clean, model_clean
+        for key, (al, disp) in alias_map.items():
+            if key in q_fold:
+                slug, display = al, disp
+                break
+        if not slug and not eff:
+            return {"ok": False, "error": "Précise un modèle (opus, sonnet, haiku…) ou un niveau d'effort (low, medium, high, max)."}
+        claude_eff = "high" if eff == "xhigh" else eff
+        return {
+            "ok": True,
+            "slug": slug,
+            "display": f"{display} ({claude_eff})" if (display and claude_eff) else (display or f"effort {claude_eff}"),
+            "effort": claude_eff,
+            "slash_cmd": f"/model {slug}" if slug else "",
+        }
+
+    if k == "codex":
+        slug = model_clean or ""
+        codex_eff = "high" if eff == "max" else eff
+        if not slug and not codex_eff:
+            return {"ok": False, "error": "Précise un modèle Codex (ex. gpt-5.6-terra, o3) ou un effort (low, medium, high, xhigh)."}
+        return {
+            "ok": True,
+            "slug": slug,
+            "display": f"{slug} ({codex_eff})" if (slug and codex_eff) else (slug or f"effort {codex_eff}"),
+            "effort": codex_eff,
+            "slash_cmd": "",
+        }
+
+    if k == "copilot":
+        slug = model_clean or ""
+        if not slug and not eff:
+            return {"ok": False, "error": "Précise un modèle Copilot (ex. claude-sonnet-4.5, gpt-5, auto) ou un effort."}
+        return {
+            "ok": True,
+            "slug": slug,
+            "display": f"{slug} ({eff})" if (slug and eff) else (slug or f"effort {eff}"),
+            "effort": eff,
+            "slash_cmd": f"/model {slug}" if slug else "",
+        }
+
+    if k == "opencode":
+        oc_models = list_opencode_models()
+        chosen = model_clean
+        if oc_models and q_fold:
+            for item in oc_models:
+                if q_fold in _fold_text(item):
+                    chosen = item
+                    break
+        if not chosen:
+            return {"ok": False, "error": "Précise un modèle OpenCode (ex. opencode/deepseek-v4.1-flash-free)."}
+        return {"ok": True, "slug": chosen, "display": chosen, "effort": eff, "slash_cmd": ""}
+
+    return {"ok": False, "error": f"Changement de modèle non géré pour le moteur « {kind} »."}
+
+
+def _update_json_file_key(path, updater):
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        if not isinstance(data, dict):
+            data = {}
+    except (OSError, ValueError):
+        data = {}
+    updater(data)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _update_codex_config(model_slug="", effort=""):
+    cfg = HOME / ".codex/config.toml"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    lines = cfg.read_text(encoding="utf-8").splitlines() if cfg.is_file() else []
+
+    def set_toml_key(arr, key, val):
+        if not val:
+            return arr
+        pat = re.compile(rf"^\s*{re.escape(key)}\s*=")
+        new_line = f'{key} = "{val}"'
+        for i, ln in enumerate(arr):
+            if ln.strip().startswith("["):
+                arr.insert(i, new_line)
+                return arr
+            if pat.match(ln):
+                arr[i] = new_line
+                return arr
+        arr.insert(0, new_line)
+        return arr
+
+    if model_slug:
+        lines = set_toml_key(lines, "model", model_slug)
+    if effort:
+        lines = set_toml_key(lines, "model_reasoning_effort", effort)
+    tmp = cfg.with_suffix(".toml.tmp")
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    tmp.replace(cfg)
+
+
+def _kitty_screen_is_busy_agy(screen_text):
+    tail = "\n".join((screen_text or "").splitlines()[-14:])
+    return any(tok in tail for tok in ("TRAVAILLE", "Thought for", "Running command", "(alt+m to send immediately)", "esc to interrupt"))
+
+
+def _verify_kitty_model_change(kitty_pid, agent_pid, procs, before_screen, expected_display, timeout_s=2.4):
+    """Relit l'écran Kitty jusqu'à 2,4 s pour confirmer la réponse réelle de `/model ...`."""
+    deadline = time.monotonic() + timeout_s
+    last_tail = ""
+    exp_fold = _fold_text(expected_display)
+    while time.monotonic() < deadline:
+        time.sleep(0.30)
+        _, _, cur = read_kitty_screen(kitty_pid, agent_pid, procs)
+        if not cur:
+            continue
+        lines = [ln.strip() for ln in cur.splitlines() if ln.strip()]
+        tail_lines_txt = lines[-12:]
+        last_tail = "\n".join(tail_lines_txt)
+        for ln in reversed(tail_lines_txt):
+            lf = _fold_text(ln)
+            if "model set to" in lf or "model already set to" in lf or "switched to" in lf or "active model" in lf:
+                return True, ln
+            if any(err in lf for err in ("unknown model", "invalid model", "model not found", "not available", "error:")):
+                return False, ln
+        # Vérifier aussi la barre de statut AGY qui affiche directement le nom complet du modèle
+        if exp_fold and cur != before_screen:
+            for ln in reversed(tail_lines_txt[-4:]):
+                if exp_fold in _fold_text(ln):
+                    return True, f"Confirmé dans la barre d'état : {expected_display}"
+    return None, clip(last_tail.splitlines()[-1] if last_tail else "", 120)
+
+
+def set_agent_model(model, effort="", agent_id="", kind=""):
+    """Change réellement le modèle/effort d'un agent IA (AGY CLI, Antigravity App, Claude, Codex, Copilot, OpenCode) avec vérification."""
+    procs, _ = scan()
+    snap = snapshot({})
+    agents = snap["agents"]
+
+    target = None
+    if agent_id:
+        target = next((a for a in agents if a["id"] == agent_id), None)
+
+    eff_kind = (target["kind"] if target else str(kind or "")).strip().lower()
+    if not target and eff_kind:
+        # Priorité à un agent vivant du bon moteur
+        cands = [a for a in agents if a["kind"] == eff_kind]
+        target = next((a for a in cands if a.get("alive") and a.get("pid")), None) or (cands[0] if cands else None)
+    if not target and not eff_kind:
+        alive_cli = [a for a in agents if a.get("alive") and a.get("surface") == "cli"]
+        if len(alive_cli) == 1:
+            target = alive_cli[0]
+            eff_kind = target["kind"]
+        elif len(agents) == 1:
+            target = agents[0]
+            eff_kind = target["kind"]
+        else:
+            eff_kind = "agy"
+
+    # Si l'utilisateur demande uniquement un changement d'effort ("passe en effort moyen"), conserver le modèle actuel de l'agent
+    model_arg = str(model or "").strip()
+    effort_arg = str(effort or "").strip()
+    if not model_arg and target and target.get("model"):
+        model_arg = target["model"]
+    if not model_arg and eff_kind == "agy":
+        try:
+            st = json.loads((HOME / ".gemini/antigravity-cli/settings.json").read_text(encoding="utf-8"))
+            if isinstance(st, dict) and st.get("model"):
+                model_arg = str(st["model"])
+        except (OSError, ValueError):
+            pass
+
+    res = resolve_agent_model(eff_kind, model_arg, effort_arg)
+    if not res.get("ok"):
+        return {"ok": False, "kind": eff_kind, "detail": res.get("error", "Modèle introuvable.")}
+
+    display = res["display"]
+    slug = res["slug"]
+    eff_val = res.get("effort") or ""
+    slash_cmd = res.get("slash_cmd") or ""
+    note = res.get("note") or ""
+
+    # 1. Antigravity CLI (`agy`)
+    if eff_kind == "agy":
+        # Toujours persister le modèle par défaut dans settings.json pour cohérence
+        agy_settings = HOME / ".gemini/antigravity-cli/settings.json"
+        persisted = False
+        try:
+            _update_json_file_key(agy_settings, lambda d: d.__setitem__("model", display))
+            persisted = True
+        except OSError:
+            pass
+
+        pid = int(target.get("pid") or 0) if target else 0
+        if pid > 1:
+            kpid = find_kitty_ancestor(pid, procs)
+            if kpid:
+                _, wid, before = read_kitty_screen(kpid, pid, procs)
+                if _kitty_screen_is_busy_agy(before):
+                    return {
+                        "ok": False,
+                        "kind": "agy",
+                        "model": display,
+                        "detail": (
+                            f"AGY CLI (Kitty #{wid}) est actuellement en train de travailler : impossible d'injecter "
+                            f"`{slash_cmd}` tant que le tour n'est pas fini (settings.json déjà réglé sur {display}). "
+                            "Interromps d'abord la tâche ou attends la fin du tour."
+                        ),
+                    }
+                ok_send, send_detail = send_via_kitty(kpid, pid, procs, slash_cmd)
+                if not ok_send:
+                    return {"ok": False, "kind": "agy", "model": display, "detail": send_detail}
+                verified, vmsg = _verify_kitty_model_change(kpid, pid, procs, before, display)
+                if verified is True:
+                    return {
+                        "ok": True,
+                        "kind": "agy",
+                        "model": display,
+                        "slug": slug,
+                        "command": slash_cmd,
+                        "detail": f"{vmsg}{note} (via `{slash_cmd}` dans Kitty #{wid})",
+                    }
+                if verified is False:
+                    return {
+                        "ok": False,
+                        "kind": "agy",
+                        "model": display,
+                        "command": slash_cmd,
+                        "detail": f"AGY CLI a rejeté `{slash_cmd}` : {vmsg}",
+                    }
+                return {
+                    "ok": True,
+                    "kind": "agy",
+                    "model": display,
+                    "slug": slug,
+                    "command": slash_cmd,
+                    "detail": f"Commande `{slash_cmd}` envoyée à Kitty #{wid}{note} (confirmation visuelle non lue à temps ; settings.json mis à jour).",
+                }
+        return {
+            "ok": persisted,
+            "kind": "agy",
+            "model": display,
+            "slug": slug,
+            "command": slash_cmd,
+            "detail": (
+                f"Aucune session AGY CLI active dans Kitty : modèle par défaut réglé sur {display}{note} dans ~/.gemini/antigravity-cli/settings.json."
+                if persisted
+                else "Aucune session AGY CLI active et impossible d'écrire settings.json."
+            ),
+        }
+
+    # 2. Antigravity App (Hub/IDE Electron)
+    if eff_kind == "antigravity":
+        # Honnêteté stricte : l'app Electron n'expose pas d'API CLI pour changer le menu déroulant d'une conversation ouverte.
+        # On met à jour settings.json pour AGY CLI si cohérent, et on explique clairement l'état réel + le nom exact du modèle.
+        full_sid = resolve_full_session_id(target["id"], "antigravity") if target else ""
+        hint = (
+            f" Sélecteur en bas de la fenêtre Antigravity App → « {display} »."
+            + (f" (Ou relance la conversation en CLI : `agy --conversation {full_sid} --model {slug}`)" if full_sid else "")
+        )
+        return {
+            "ok": False,
+            "kind": "antigravity",
+            "model": display,
+            "slug": slug,
+            "detail": (
+                f"Antigravity App (fenêtre graphique Electron) n'expose pas de commande CLI pour changer le modèle à chaud "
+                f"dans l'onglet ouvert.{hint}"
+            ),
+        }
+
+    # 3. Claude Code CLI (`claude`)
+    if eff_kind == "claude":
+        claude_cfg = HOME / ".claude/settings.json"
+        try:
+            def _upd_claude(d):
+                if slug:
+                    d["model"] = slug
+                if eff_val:
+                    ms = d.setdefault("modelSettings", {})
+                    if isinstance(ms, dict):
+                        for mk in list(ms.keys()):
+                            if (not slug or slug in mk) and isinstance(ms[mk], dict):
+                                ms[mk]["effortLevel"] = eff_val
+            _update_json_file_key(claude_cfg, _upd_claude)
+        except OSError:
+            pass
+
+        pid = int(target.get("pid") or 0) if target else 0
+        if pid > 1 and slash_cmd:
+            kpid = find_kitty_ancestor(pid, procs)
+            if kpid:
+                _, wid, before = read_kitty_screen(kpid, pid, procs)
+                ok_send, send_detail = send_via_kitty(kpid, pid, procs, slash_cmd)
+                if ok_send:
+                    verified, vmsg = _verify_kitty_model_change(kpid, pid, procs, before, display, timeout_s=1.8)
+                    extra = f" · {vmsg}" if vmsg else ""
+                    eff_note = f" (effort {eff_val} enregistré dans ~/.claude/settings.json)" if eff_val else ""
+                    return {
+                        "ok": verified is not False,
+                        "kind": "claude",
+                        "model": display,
+                        "command": slash_cmd,
+                        "detail": f"Envoyé `{slash_cmd}` à Claude Code (Kitty #{wid}){extra}{eff_note}",
+                    }
+                return {"ok": False, "kind": "claude", "detail": send_detail}
+        return {
+            "ok": True,
+            "kind": "claude",
+            "model": display,
+            "detail": f"Réglage Claude Code enregistré dans ~/.claude/settings.json : {display} (actif au prochain lancement).",
+        }
+
+    # 4. OpenAI Codex CLI (`codex`)
+    if eff_kind == "codex":
+        try:
+            _update_codex_config(model_slug=slug, effort=eff_val)
+        except OSError as exc:
+            return {"ok": False, "kind": "codex", "detail": f"Impossible d'écrire ~/.codex/config.toml : {exc}"}
+        live_note = (
+            " (Dans une session Codex déjà ouverte, utilise `/model` dans le TUI ou relance la session pour appliquer.)"
+            if (target and target.get("alive"))
+            else ""
+        )
+        return {
+            "ok": True,
+            "kind": "codex",
+            "model": display,
+            "detail": f"~/.codex/config.toml mis à jour : {display}.{live_note}",
+        }
+
+    # 5. GitHub Copilot CLI (`copilot`)
+    if eff_kind == "copilot":
+        pid = int(target.get("pid") or 0) if target else 0
+        if pid > 1 and slash_cmd:
+            kpid = find_kitty_ancestor(pid, procs)
+            if kpid:
+                _, wid, before = read_kitty_screen(kpid, pid, procs)
+                ok_send, send_detail = send_via_kitty(kpid, pid, procs, slash_cmd)
+                if ok_send:
+                    verified, vmsg = _verify_kitty_model_change(kpid, pid, procs, before, display, timeout_s=1.8)
+                    extra = f" · {vmsg}" if vmsg else ""
+                    return {
+                        "ok": verified is not False,
+                        "kind": "copilot",
+                        "model": display,
+                        "command": slash_cmd,
+                        "detail": f"Envoyé `{slash_cmd}` à Copilot CLI (Kitty #{wid}){extra}",
+                    }
+                return {"ok": False, "kind": "copilot", "detail": send_detail}
+        return {
+            "ok": True,
+            "kind": "copilot",
+            "model": display,
+            "detail": f"Aucune session Copilot CLI active dans Kitty : lance Copilot avec `copilot --model {slug}`" + (f" --reasoning-effort {eff_val}" if eff_val else "") + ".",
+        }
+
+    # 6. OpenCode
+    if eff_kind == "opencode":
+        return {
+            "ok": False,
+            "kind": "opencode",
+            "model": display,
+            "detail": f"OpenCode change de modèle via son raccourci TUI interne (modèle résolu : {display}).",
+        }
+
+    return {"ok": False, "kind": eff_kind, "detail": f"Changement de modèle non supporté pour {eff_kind}."}
 
 
 def resolve_full_session_id(agent_id, kind):
@@ -1866,6 +2565,16 @@ def send_to_agent(agent_id, message):
     kind = target["kind"]
     pid = int(target.get("pid") or 0)
     cwd = target.get("cwd") or str(HOME)
+
+    # Garde-fou anti-commande inventée : intercepter `/set model`, `/set effort` ou `/model ...`
+    m_bad_model = re.match(r"^/(?:set\s+model|model)\s+(.+)$", msg, flags=re.IGNORECASE)
+    if m_bad_model:
+        res_m = set_agent_model(m_bad_model.group(1).strip(), agent_id=agent_id, kind=kind)
+        return {"ok": bool(res_m.get("ok")), "method": "set_model", "detail": res_m.get("detail", "")}
+    m_bad_eff = re.match(r"^/(?:set\s+effort|effort)\s+(.+)$", msg, flags=re.IGNORECASE)
+    if m_bad_eff:
+        res_e = set_agent_model("", effort=m_bad_eff.group(1).strip(), agent_id=agent_id, kind=kind)
+        return {"ok": bool(res_e.get("ok")), "method": "set_model", "detail": res_e.get("detail", "")}
 
     # 1. Agent CLI vivant dans Kitty : injection directe sans voler le focus
     if pid > 1 and kind != "antigravity":
@@ -2193,7 +2902,7 @@ def _find_hypr_window(target):
         if act.get("address"):
             return act
         return clients[0] if clients else None
-    if q.startswith("0x") or q.startswith("address:"):
+    if q.startswith(("0x", "address:")):
         addr = q.replace("address:", "")
         return next((c for c in clients if (c.get("address") or "").lower() == addr), None)
     for c in clients:
@@ -2916,20 +3625,46 @@ def _native_tool_declarations():
         },
         {
             "name": "agent_dispatch",
-            "description": "Lance un nouvel agent IA dans un projet. RÈGLE STRICTE : si l'utilisateur demande juste d'ouvrir/lancer l'agent sans tâche précise, laisse prompt VIDE ('').",
+            "description": "Lance un nouvel agent IA dans un projet (avec modèle et effort optionnels). RÈGLE STRICTE : si l'utilisateur demande juste d'ouvrir/lancer l'agent sans tâche précise, laisse prompt VIDE ('').",
             "parameters": {
                 "type": "OBJECT",
                 "properties": {
                     "kind": {"type": "STRING", "enum": ["agy", "claude", "codex", "copilot", "opencode", "antigravity", "gemini", "aider"]},
                     "cwd": {"type": "STRING", "description": "Chemin du dossier projet"},
                     "prompt": {"type": "STRING", "description": "Tâche précise à exécuter (CHAÎNE VIDE si simple lancement)"},
+                    "model": {"type": "STRING", "description": "Modèle souhaité optionnel (ex. 'Gemini 4 Hydrogen', 'neon', 'opus', 'gpt-5.6-terra')"},
+                    "effort": {"type": "STRING", "description": "Niveau d'effort optionnel : 'low', 'medium', 'high', 'xhigh', 'max'"},
                 },
                 "required": ["kind"],
             },
         },
         {
+            "name": "agent_set_model",
+            "description": "Change le modèle IA et/ou le niveau d'effort d'un agent (AGY CLI via `/model <Nom Exact>` avec vérification réelle dans Kitty, Claude Code, Codex, Copilot, OpenCode, ou diagnostic réaliste pour Antigravity App). TOUJOURS utiliser cet outil (JAMAIS `agent_send` avec `/set model` ou `/set effort` qui n'existent pas).",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "model": {"type": "STRING", "description": "Modèle demandé (ex. 'hydrogen', 'Gemini 4 Hydrogen (Medium)', 'neon', 'argon', 'carbon', 'flash', 'opus', 'sonnet', 'gpt-5.6-terra'). Peut être vide si changement d'effort seul."},
+                    "effort": {"type": "STRING", "description": "Niveau d'effort souhaité (ex. 'low'/'faible', 'medium'/'moyen', 'high'/'haut', 'xhigh', 'max')"},
+                    "agent_id": {"type": "STRING", "description": "ID exact de l'agent actif depuis le contexte (optionnel si kind est fourni)"},
+                    "kind": {"type": "STRING", "enum": ["agy", "antigravity", "claude", "codex", "copilot", "opencode"], "description": "Moteur cible ('agy' pour AGY CLI, 'antigravity' pour l'application graphique Antigravity App)"},
+                },
+                "required": ["model"],
+            },
+        },
+        {
+            "name": "agent_list_models",
+            "description": "Liste les vrais modèles disponibles en direct pour un moteur (ex. `agy models` pour AGY CLI / Antigravity, `opencode models`).",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "kind": {"type": "STRING", "enum": ["agy", "antigravity", "opencode"], "description": "Moteur à interroger (défaut: agy)"},
+                },
+            },
+        },
+        {
             "name": "agent_send",
-            "description": "Envoie une consigne ou commande (ex. '/set model ...') directement dans la session active d'un agent IA en cours.",
+            "description": "Envoie une consigne ou un message texte directement dans la session active d'un agent IA en cours. NE PAS utiliser pour changer de modèle ou d'effort : utilise TOUJOURS `agent_set_model`.",
             "parameters": {
                 "type": "OBJECT",
                 "properties": {
@@ -3165,9 +3900,33 @@ def _execute_commander_call(fname, args, ctx_state):
         k = str(args.get("kind") or "claude").lower()
         c = str(args.get("cwd") or default_cwd or str(HOME))
         pr = clean_launch_prompt(str(args.get("prompt") or ""))
-        dispatch_agent(k, c, pr)
-        lbl = f"Lancé {k.upper()} · {norm_project(c)}" + (f" ({clip(pr, 36)})" if pr else "")
+        mdl = str(args.get("model") or "")
+        eff = str(args.get("effort") or "")
+        dispatch_agent(k, c, pr, model=mdl, effort=eff)
+        m_tag = f" [{mdl}{(' ' + eff) if eff else ''}]" if (mdl or eff) else ""
+        lbl = f"Lancé {k.upper()}{m_tag} · {norm_project(c)}" + (f" ({clip(pr, 36)})" if pr else "")
         return True, lbl, "dispatch", lbl
+
+    if fname == "agent_set_model":
+        mdl = str(args.get("model") or "")
+        eff = str(args.get("effort") or "")
+        aid = str(args.get("agent_id") or "")
+        k = str(args.get("kind") or "")
+        res = set_agent_model(mdl, effort=eff, agent_id=aid, kind=k)
+        ok = bool(res.get("ok"))
+        detail = res.get("detail", "")
+        shown = res.get("model") or mdl or eff
+        return ok, detail, "set_model", f"Modèle · {shown} ({clip(detail, 42)})"
+
+    if fname == "agent_list_models":
+        k = str(args.get("kind") or "agy").lower()
+        if k == "opencode":
+            items = list_opencode_models()
+            out = ", ".join(items[:25]) if items else "Aucun modèle OpenCode détecté."
+            return bool(items), out, "list_models", f"Modèles OpenCode ({len(items)})"
+        items = list_agy_models()
+        out = "\n".join(f"{slug} -> {label}" for slug, label in items)
+        return bool(items), out, "list_models", f"Modèles AGY ({len(items)})"
 
     if fname == "agent_send":
         aid = str(args.get("agent_id") or "")
@@ -3315,6 +4074,10 @@ def commander(prompt, default_cwd=""):
         f"MÉMOIRE LONG TERME :\n{ano_mem or '(aucune entrée)'}\n\n"
         "RÈGLES IMPÉRATIVES :\n"
         "- AGIS VRAIMENT via les outils mis à ta disposition. Ne prétends JAMAIS avoir fait une action sans l'avoir exécutée et vérifiée.\n"
+        "- Pour CHANGER LE MODÈLE ou L'EFFORT d'un agent (`agy`, `antigravity`, `claude`, `codex`, `copilot`, `opencode`), appelle TOUJOURS `agent_set_model(model=..., effort=..., agent_id=..., kind=...)`.\n"
+        "  • N'envoie JAMAIS `/set model` ni `/set effort` via `agent_send` : ces commandes N'EXISTENT PAS. Sur AGY CLI, la vraie commande est `/model <Nom Exact>` (ex. `/model Gemini 4 Hydrogen (Medium)`), gérée et vérifiée automatiquement par `agent_set_model`.\n"
+        "  • Si l'utilisateur demande pour « agy » / « agy cli », cible `kind='agy'`. Si c'est pour « antigravity app » / l'application graphique, cible `kind='antigravity'` et rapporte honnêtement la limite GUI si l'outil retourne `ok: false`.\n"
+        "  • Pour connaître les modèles exacts disponibles avant de répondre, appelle `agent_list_models`.\n"
         "- Pour changer de bureau (« va sur le bureau 2 », « bureau suivant »), appelle TOUJOURS `hypr_workspace(action='switch', workspace='2')`.\n"
         "- Pour déplacer/fermer/focus une fenêtre, appelle `hypr_windows`. Pour organiser tous les bureaux, `hypr_windows(action='organize')` ou `hypr_orchestrator`.\n"
         "- Pour connaître l'état réel du PC (volume, batterie, Wi-Fi, Bluetooth, audio, luminosité, RAM), appelle `system_state` ou `system_control(action='state')`.\n"
@@ -3754,6 +4517,31 @@ if __name__ == "__main__":
         dispatch_agent(sys.argv[2], sys.argv[3], " ".join(sys.argv[4:]))
     elif cmd == "send" and len(sys.argv) >= 4:
         print(json.dumps(send_to_agent(sys.argv[2], " ".join(sys.argv[3:])), ensure_ascii=False))
+    elif cmd == "set-model" and len(sys.argv) >= 3:
+        # Usage: ano-agents set-model <model> [--effort <lvl>] [--agent <id>] [--kind <kind>]
+        m_parts, eff_a, aid_a, k_a = [], "", "", ""
+        i = 2
+        while i < len(sys.argv):
+            tok = sys.argv[i]
+            if tok == "--effort" and i + 1 < len(sys.argv):
+                eff_a = sys.argv[i + 1]
+                i += 2
+            elif tok == "--agent" and i + 1 < len(sys.argv):
+                aid_a = sys.argv[i + 1]
+                i += 2
+            elif tok == "--kind" and i + 1 < len(sys.argv):
+                k_a = sys.argv[i + 1]
+                i += 2
+            else:
+                m_parts.append(tok)
+                i += 1
+        print(json.dumps(set_agent_model(" ".join(m_parts), effort=eff_a, agent_id=aid_a, kind=k_a), ensure_ascii=False))
+    elif cmd == "models":
+        k = sys.argv[2].lower() if len(sys.argv) >= 3 else "agy"
+        if k == "opencode":
+            print(json.dumps(list_opencode_models(), ensure_ascii=False))
+        else:
+            print(json.dumps([{"slug": s, "display": d} for s, d in list_agy_models()], ensure_ascii=False))
     elif cmd == "commander" and len(sys.argv) >= 3:
         cwd_arg = ""
         args = sys.argv[2:]
