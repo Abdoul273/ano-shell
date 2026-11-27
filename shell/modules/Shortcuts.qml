@@ -67,6 +67,22 @@ Scope {
     // qmllint disable unresolved-type
     CustomShortcut {
         // qmllint enable unresolved-type
+        name: "controlCenter"
+        description: I18n.tr("Afficher/Masquer le centre de contrôle")
+        onPressed: {
+            if (root.hasFullscreen)
+                return;
+            const screenState = ShellState.forActive();
+            screenState.dashboard = false;
+            screenState.quickNotes = false;
+            screenState.quickTasks = false;
+            screenState.controlCenter = !screenState.controlCenter;
+        }
+    }
+
+    // qmllint disable unresolved-type
+    CustomShortcut {
+        // qmllint enable unresolved-type
         name: "dashboard"
         description: I18n.tr("Afficher/Masquer le tableau de bord")
         onPressed: {

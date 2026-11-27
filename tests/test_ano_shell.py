@@ -218,3 +218,14 @@ def test_no_qml_singleton_shadowing_on_instantiation():
 
     assert not collisions, "\n".join(collisions)
 
+
+def test_custom_shortcut_registers_primary_and_legacy_appids():
+    """CustomShortcut doit enregistrer ano-shell:* et l'alias caelestia:* (compatibilité HyprLua)."""
+    cs = (ROOT / "shell/components/misc/CustomShortcut.qml").read_text(encoding="utf-8")
+    assert 'appid: "ano-shell"' in cs
+    assert 'appid: "caelestia"' in cs
+    shortcuts = (ROOT / "shell/modules/Shortcuts.qml").read_text(encoding="utf-8")
+    for name in ("launcher", "spotlight", "dashboard", "controlCenter", "nexus", "session"):
+        assert f'name: "{name}"' in shortcuts, f"Raccourci {name} manquant dans Shortcuts.qml"
+
+

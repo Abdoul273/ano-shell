@@ -113,6 +113,7 @@ var strings = {
     "Afficher/Masquer le lanceur, le tableau de bord et l'OSD": "Toggle launcher, dashboard, and OSD",
     "Afficher/Masquer le menu de session": "Toggle session menu",
     "Afficher/Masquer le tableau de bord": "Toggle dashboard",
+    "Afficher/Masquer le centre de contrôle": "Toggle control center",
     "Afficher/Masquer le volet latéral": "Toggle sidebar",
     "Afficher/Masquer les utilitaires": "Toggle utilities",
     "Affiché": "Shown",
