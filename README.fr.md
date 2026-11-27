@@ -76,6 +76,12 @@ Shaders GLSL Qt6 réfractifs sur mesure, Dynamic Island iOS 27, Centre de contr�
       <br /><sub><b>Projection d'écran &amp; Dock</b> — Bascule instantanée PC seul / Dupliquer / Étendre / Sans fil (<code>Super + P</code>) &amp; Dock macOS</sub>
     </td>
   </tr>
+  <tr>
+    <td colspan="2" align="center">
+      <img src="docs/screenshots/agent-os-katana-glass.webp" alt="Ano Shell — Studio Agent OS Liquid Glass façon Katana pilotant Antigravity, Claude Code, Codex, Copilot et OpenCode" width="100%" />
+      <br /><sub><b>Agent OS · Studio Multi-Agents façon Katana</b> — Canvas spatial Liquid Glass, inspecteur d'activité en direct &amp; déploiement d'escouade pour Antigravity, Claude Code, Codex, Copilot &amp; OpenCode (<code>Super + Maj + A</code>)</sub>
+    </td>
+  </tr>
 </table>
 
 ---
@@ -192,6 +198,7 @@ Appuie sur **`Super + H`** à tout moment pour ouvrir l'aide interactive des rac
 | **`Super + Maj + N`** / **`Super + Maj + T`** | Notes rapides / Tâches rapides |
 | **`Super + Maj + O`** | Horloge (minuteur, chrono, pomodoro, alarmes) |
 | **`Super + Maj + B`** | Écouteurs 3D façon AirPods |
+| **`Super + Maj + A`** | **Agent OS** — Studio multi-agents Liquid Glass façon Katana (Canvas, Cockpit, Escouade) |
 | **`Super + Maj + Espace`** | Assistant vocal (`ano-siri`, chargé à la demande) |
 | **`Super + Maj + D`** / **`W`** / **`Super + Alt + T`** | Dictée vocale / Outils d'écriture / Traduction |
 | **`Super + Tab`** (ou 3 doigts ↑) | Mission Control |
