@@ -7,6 +7,7 @@ from argparse import Namespace
 from datetime import UTC, datetime
 
 from ano_shell.hypr import message
+from ano_shell.i18n import tr
 from ano_shell.notify import notify
 from ano_shell.paths import APP_NAME, screenshots_dir
 
@@ -41,9 +42,12 @@ def run_screenshot(args: Namespace) -> int:
         "image-x-generic-symbolic",
         "-h",
         f"STRING:image-path:{dest}",
-        "--action=open=Ouvrir",
-        "Capture d'écran effectuée",
-        f"Enregistrée dans {dest} et copiée dans le presse-papiers",
+        f"--action=open={tr('Ouvrir', 'Open')}",
+        tr("Capture d'écran effectuée", "Screenshot captured"),
+        tr(
+            f"Enregistrée dans {dest} et copiée dans le presse-papiers",
+            f"Saved to {dest} and copied to clipboard",
+        ),
     )
     if action == "open":
         subprocess.Popen(["swappy", "-f", str(dest)], start_new_session=True)

@@ -139,7 +139,11 @@ Tape cette unique commande puis appuie sur **Entrée** :
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Abdoul273/ano-shell/main/bootstrap.sh | bash
+# Ou via AUR (installe Hyprland, Kitty, Fastfetch, Nautilus, GTK, Fish, Starship et SDDM automatiquement) :
+yay -S ano-shell && ano-shell setup
 ```
+
+> **100 % bilingue FR / EN :** l'installeur détecte automatiquement la langue du système et te propose **English** ou **Français** (ou `--lang fr` / `--lang en`). Change de langue à tout moment via `ano-shell lang fr|en|auto` ou **Paramètres (`Super + I`) → Langue et région**.
 
 Entre ton mot de passe `sudo` quand demandé, puis laisse faire (~5 à 15 min selon ton PC et ta connexion).
 
@@ -213,6 +217,8 @@ Appuie sur **`Super + H`** à tout moment pour ouvrir l'aide interactive des rac
 
 | Commande | Rôle |
 | :--- | :--- |
+| `ano-shell setup [--lang fr\|en]` | Déploie toutes les configs utilisateur (Hyprland, Kitty, Fastfetch, Nautilus/GTK, Fish, Starship, SDDM) |
+| `ano-shell lang [auto\|fr\|en]` | Affiche ou bascule la langue du shell et de la CLI en direct |
 | `ano-shell shell -d` / `-k` | Démarre ou arrête le shell (bloque l'arrêt si l'écran est verrouillé) |
 | `ano-shell wallpaper -f <img>` | Change le fond d'écran et génère la palette dynamique Material You |
 | `ano-shell scheme set -m dark\|light` | Change le thème ou bascule clair/sombre |

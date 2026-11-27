@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from ano_shell.hypr import message
+from ano_shell.i18n import tr
 from ano_shell.notify import close_notification, notify
 from ano_shell.paths import (
     get_config,
@@ -73,14 +74,24 @@ def _start(args: Namespace) -> int:
     recording_path.parent.mkdir(parents=True, exist_ok=True)
     proc = subprocess.Popen([RECORDER, *rec_args, "-o", str(recording_path)], start_new_session=True)
 
-    notif_id = notify("-p", "Enregistrement démarré", "Enregistrement en cours...")
+    notif_id = notify(
+        "-p",
+        tr("Enregistrement démarré", "Recording started"),
+        tr("Enregistrement en cours...", "Recording in progress..."),
+    )
     recording_notif_path.parent.mkdir(parents=True, exist_ok=True)
     recording_notif_path.write_text(notif_id, encoding="utf-8")
 
     try:
         if proc.wait(1.0) != 0:
             close_notification(notif_id)
-            notify("Échec de l'enregistrement", f"{RECORDER} s'est arrêté (code {proc.returncode}).")
+            notify(
+                tr("Échec de l'enregistrement", "Recording failed"),
+                tr(
+                    f"{RECORDER} s'est arrêté (code {proc.returncode}).",
+                    f"{RECORDER} exited with code {proc.returncode}.",
+                ),
+            )
             return proc.returncode
     except subprocess.TimeoutExpired:
         pass
@@ -111,11 +122,11 @@ def _stop(args: Namespace) -> int:
         subprocess.run(["wl-copy", "--type", "text/uri-list"], input=uri.encode("utf-8"), check=False)
 
     action = notify(
-        "--action=watch=Regarder",
-        "--action=open=Ouvrir",
-        "--action=delete=Supprimer",
-        "Enregistrement terminé",
-        f"Sauvegardé dans {new_path}",
+        f"--action=watch={tr('Regarder', 'Watch')}",
+        f"--action=open={tr('Ouvrir', 'Open')}",
+        f"--action=delete={tr('Supprimer', 'Delete')}",
+        tr("Enregistrement terminé", "Recording finished"),
+        tr(f"Sauvegardé dans {new_path}", f"Saved to {new_path}"),
     )
     if action == "watch":
         subprocess.Popen(["xdg-open", str(new_path)], start_new_session=True)

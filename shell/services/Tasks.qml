@@ -93,13 +93,13 @@ Singleton {
         take(/(^|\s)!!(\s|$)|(^|\s)!urgent[e]?(\s|$)/i, () => priority = "urgent");
         take(/(^|\s)!(haute?|high)?(\s|$)/i, () => priority = "high");
         take(/(^|\s)!(basse?|low)(\s|$)/i, () => priority = "low");
-        take(/(^|\s)(aujourd'hui|auj)(\s|$)/i, () => due = endOfDay(0));
-        take(/(^|\s)demain(\s|$)/i, () => due = endOfDay(1));
+        take(/(^|\s)(aujourd'hui|auj|today)(\s|$)/i, () => due = endOfDay(0));
+        take(/(^|\s)(demain|tomorrow)(\s|$)/i, () => due = endOfDay(1));
         if (!title)
             return;
-        // « surveille … » : tâche de surveillance web
-        if (/^surveille[rz]?\s/i.test(title)) {
-            addWatch(title.replace(/^surveille[rz]?\s+/i, ""));
+        // « surveille … » / « watch … » : tâche de surveillance web
+        if (/^(surveille[rz]?|watch)\s/i.test(title)) {
+            addWatch(title.replace(/^(surveille[rz]?|watch)\s+/i, ""));
             return;
         }
         upsertNew(newTask(title, priority, due, "Personnel & Santé", "", []));

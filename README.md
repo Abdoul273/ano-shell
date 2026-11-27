@@ -133,7 +133,11 @@ Never configured Hyprland before? Follow these **4 simple steps**:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Abdoul273/ano-shell/main/bootstrap.sh | bash
+# Or via AUR (installs Hyprland, Kitty, Fastfetch, Nautilus, GTK, Fish, Starship & SDDM automatically):
+yay -S ano-shell && ano-shell setup
 ```
+
+> **Bilingual EN / FR:** the installer automatically detects your system locale and lets you choose **English** or **Français** (or pass `--lang en` / `--lang fr`). Switch anytime via `ano-shell lang en|fr|auto` or **Settings (`Super + I`) → Language & region**.
 
 Enter your `sudo` password once and wait ~5–15 minutes while everything installs and builds automatically:
 - **Full Wayland/Hyprland stack**: Hyprland, portals, PipeWire, Bluetooth, NetworkManager, Power Profiles, **SDDM Liquid Glass login screen** + macOS cursor.
@@ -202,6 +206,8 @@ Press **`Super + H`** anytime to search and trigger any shortcut.
 
 | Command | Description |
 | :--- | :--- |
+| `ano-shell setup [--lang en\|fr]` | Deploy all user configs (Hyprland, Kitty, Fastfetch, Nautilus/GTK, Fish, Starship, SDDM) |
+| `ano-shell lang [auto\|en\|fr]` | Show or switch interface & CLI language live |
 | `ano-shell shell -d` / `-k` | Start or safely stop the shell (blocks kill while screen is locked) |
 | `ano-shell wallpaper -f <img>` | Set wallpaper and generate Material You dynamic palette |
 | `ano-shell scheme set -m dark\|light` | Switch theme or color mode |

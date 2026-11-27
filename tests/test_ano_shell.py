@@ -62,6 +62,8 @@ def test_content_window_mask_not_live():
 def test_cli_parser_subcommands():
     parser = build_parser()
     for argv in (
+        ["setup", "--dry-run"],
+        ["lang", "en"],
         ["shell", "-d"],
         ["wallpaper", "-f", "/tmp/a.png"],
         ["scheme", "list", "-n"],
@@ -74,6 +76,44 @@ def test_cli_parser_subcommands():
     ):
         args = parser.parse_args(argv)
         assert args.command == argv[0]
+
+
+def test_cli_i18n_and_aur_full_stack(tmp_path, monkeypatch):
+    """Vérifie le bilinguisme CLI (EN par défaut hors FR, bascule FR/EN) et le paquet AUR complet."""
+    from ano_shell import i18n
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("ANOSHELL_LANG", raising=False)
+    monkeypatch.delenv("LC_ALL", raising=False)
+    monkeypatch.delenv("LC_MESSAGES", raising=False)
+    monkeypatch.setenv("LANG", "en_US.UTF-8")
+    assert i18n.get_lang() == "en"
+    assert i18n.tr("Bonjour", "Hello") == "Hello"
+
+    i18n.set_lang("fr")
+    assert i18n.get_lang() == "fr"
+    assert i18n.tr("Bonjour", "Hello") == "Bonjour"
+
+    i18n.set_lang("auto")
+    assert i18n.get_lang() == "en"
+
+    monkeypatch.setenv("LANG", "fr_FR.UTF-8")
+    assert i18n.get_lang() == "fr"
+
+    # Paquet AUR complet pour Arch no-desktop
+    pkgbuild = (ROOT / "packaging/aur/PKGBUILD").read_text(encoding="utf-8")
+    deps_block = re.search(r"depends=\((.*?)\)", pkgbuild, flags=re.DOTALL).group(1)
+    for pkg in ("hyprland", "kitty", "fastfetch", "nautilus", "sushi", "fish", "starship", "sddm", "adw-gtk-theme", "papirus-icon-theme"):
+        assert f"'{pkg}'" in deps_block, f"{pkg} manquant dans PKGBUILD depends"
+    assert "install=ano-shell.install" in pkgbuild
+    assert (ROOT / "packaging/aur/ano-shell.install").is_file()
+
+    # Installateur bilingue : ne force pas AZERTY si non-FR
+    install_sh = (ROOT / "install").read_text(encoding="utf-8")
+    assert "--lang" in install_sh
+    assert "QWERTYUIOPASDFGHJKLZ" in install_sh
+    assert "papirus-icon-theme" in install_sh
+    assert "/etc/xdg/quickshell/ano-shell" in install_sh
 
 
 def test_hardware_profile_structure():

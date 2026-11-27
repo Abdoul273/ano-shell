@@ -1,41 +1,67 @@
 #!/usr/bin/env bash
 # ============================================================================
-#  Ano Shell Liquid Glass — écran de connexion SDDM (à lancer avec sudo)
-#    sudo ./config/sddm/install-login-screen            installe
-#    sudo ./config/sddm/install-login-screen --remove   désinstalle
+#  Ano Shell Liquid Glass — SDDM login screen installer (run with sudo)
+#    sudo ./config/sddm/install-login-screen            install
+#    sudo ./config/sddm/install-login-screen --remove   uninstall
 # ============================================================================
 set -euo pipefail
 
-[[ $EUID -eq 0 ]] || { echo "Lance ce script avec sudo." >&2; exit 1; }
+raw_lang="${ANOSHELL_LANG:-${LC_ALL:-${LC_MESSAGES:-${LANG:-en}}}}"
+UI_LANG="en"
+[[ "${raw_lang,,}" == fr* ]] && UI_LANG="fr"
+t() { [[ "$UI_LANG" == "fr" ]] && printf '%s' "$1" || printf '%s' "$2"; }
+
+[[ $EUID -eq 0 ]] || { echo "$(t "Lance ce script avec sudo." "Run this script with sudo.")" >&2; exit 1; }
 USER_NAME=${SUDO_USER:-}
-[[ -n $USER_NAME && $USER_NAME != root ]] || { echo "Lance-le avec sudo depuis ton compte (pas en root direct)." >&2; exit 1; }
+[[ -n $USER_NAME && $USER_NAME != root ]] || {
+    echo "$(t "Lance-le avec sudo depuis ton compte (pas en root direct)." "Run with sudo from your regular user account (not direct root).")" >&2
+    exit 1
+}
 USER_HOME=$(getent passwd "$USER_NAME" | cut -d: -f6)
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 THEME_DIR=/usr/share/sddm/themes/liquid-glass
 DATA_DIR=/var/lib/ano-shell-login
 CONF=/etc/sddm.conf.d/10-liquid-glass.conf
 
+# Synchronize SDDM theme language with user's lang.json if present
+SDDM_LANG="auto"
+if [[ -f "$USER_HOME/.config/ano-shell/lang.json" ]]; then
+    user_lang="$(sed -n 's/.*"lang"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$USER_HOME/.config/ano-shell/lang.json" | head -n1 || true)"
+    if [[ "$user_lang" == "fr" || "$user_lang" == "en" || "$user_lang" == "auto" ]]; then
+        SDDM_LANG="$user_lang"
+        [[ "$user_lang" != "auto" ]] && UI_LANG="$user_lang"
+    fi
+fi
+
 if [[ ${1:-} == --remove ]]; then
     rm -rf "$THEME_DIR" "$CONF" "$DATA_DIR" /usr/share/icons/macOS
-    echo "✓ Écran de connexion Liquid Glass retiré (SDDM reprend son thème par défaut)."
+    echo "✓ $(t "Écran de connexion Liquid Glass retiré (SDDM reprend son thème par défaut)." "Liquid Glass login screen removed (SDDM restored to default theme).")"
     exit 0
 fi
 
-command -v sddm >/dev/null || { echo "SDDM n'est pas installé : écran de connexion ignoré." >&2; exit 0; }
+command -v sddm >/dev/null || {
+    echo "$(t "SDDM n'est pas installé : écran de connexion ignoré." "SDDM is not installed: skipping login screen.")" >&2
+    exit 0
+}
 
-# Thème
+# Theme
 rm -rf "$THEME_DIR"
 cp -r "$HERE/liquid-glass" "$THEME_DIR"
+if [[ -f "$THEME_DIR/theme.conf" ]]; then
+    if grep -q '^lang=' "$THEME_DIR/theme.conf"; then
+        sed -i "s|^lang=.*|lang=${SDDM_LANG}|" "$THEME_DIR/theme.conf"
+    else
+        printf '\nlang=%s\n' "$SDDM_LANG" >> "$THEME_DIR/theme.conf"
+    fi
+fi
 chmod -R a+rX "$THEME_DIR"
 
-# Dossier lisible par SDDM, modifiable par l'utilisateur (fond d'écran et photo
-# se mettent ensuite à jour tout seuls, sans sudo)
+# Shared dir readable by SDDM, writable by the user (wallpaper & avatar sync without sudo)
 install -d -m 755 -o "$USER_NAME" "$DATA_DIR"
 wall=$(cat "$USER_HOME/.local/state/ano-shell/wallpaper/path.txt" 2>/dev/null || true)
 [[ -f $wall ]] && install -m 644 -o "$USER_NAME" "$wall" "$DATA_DIR/background.jpg"
 if [[ -f $USER_HOME/.face ]]; then
     install -m 644 -o "$USER_NAME" "$USER_HOME/.face" "$DATA_DIR/avatar.png"
-    # Photo de profil officielle du compte (AccountsService)
     if [[ -d /var/lib/AccountsService ]]; then
         install -d /var/lib/AccountsService/icons /var/lib/AccountsService/users
         install -m 644 "$USER_HOME/.face" "/var/lib/AccountsService/icons/$USER_NAME"
@@ -49,7 +75,7 @@ if [[ -f $USER_HOME/.face ]]; then
     fi
 fi
 
-# Curseur macOS aussi sur l'écran de connexion (s'il est installé pour l'utilisateur)
+# macOS cursor on login screen too (if installed for user)
 cursor_line=""
 if [[ -d $USER_HOME/.local/share/icons/macOS/cursors ]]; then
     rm -rf /usr/share/icons/macOS
@@ -58,7 +84,7 @@ if [[ -d $USER_HOME/.local/share/icons/macOS/cursors ]]; then
     cursor_line="CursorTheme=macOS"
 fi
 
-# Activation du thème
+# Enable theme
 install -d /etc/sddm.conf.d
 cat > "$CONF" <<CONFEOF
 # Ano Shell Liquid Glass
@@ -67,4 +93,4 @@ Current=liquid-glass
 $cursor_line
 CONFEOF
 
-echo "✓ Écran de connexion Liquid Glass installé : il apparaîtra à ta prochaine connexion."
+echo "✓ $(t "Écran de connexion Liquid Glass installé : il apparaîtra à ta prochaine connexion." "Liquid Glass login screen installed: it will appear on your next login.")"

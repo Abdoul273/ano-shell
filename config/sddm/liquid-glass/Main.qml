@@ -11,10 +11,19 @@ Item {
     width: 1920
     height: 1080
 
-    readonly property var fr: Qt.locale("fr_FR")
+    readonly property bool isFr: {
+        const cfg = (config.lang || "auto").toString().toLowerCase();
+        if (cfg === "fr")
+            return true;
+        if (cfg === "en")
+            return false;
+        return Qt.locale().name.toLowerCase().startsWith("fr");
+    }
+    readonly property var uiLocale: Qt.locale(isFr ? "fr_FR" : "en_US")
     readonly property string fontFamily: "Rubik"
     property bool active: false
     property bool busy: false
+    property bool loginError: false
     property int sessionIndex: sessionModel.lastIndex >= 0 ? sessionModel.lastIndex : 0
     property int userIndex: userModel.lastIndex >= 0 ? userModel.lastIndex : 0
 
@@ -34,6 +43,7 @@ Item {
         if (busy)
             return;
         busy = true;
+        loginError = false;
         message.text = "";
         sddm.login(userName, password.text, sessionIndex);
     }
@@ -67,8 +77,9 @@ Item {
 
         function onLoginFailed() {
             root.busy = false;
+            root.loginError = true;
             password.text = "";
-            message.text = "Mot de passe incorrect";
+            message.text = root.isFr ? "Mot de passe incorrect" : "Incorrect password";
             shake.restart();
             password.forceActiveFocus();
         }
@@ -190,7 +201,7 @@ Item {
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
             text: {
-                const s = clock.now.toLocaleDateString(root.fr, "dddd d MMMM");
+                const s = clock.now.toLocaleDateString(root.uiLocale, root.isFr ? "dddd d MMMM" : "dddd, MMMM d");
                 return s.charAt(0).toUpperCase() + s.slice(1);
             }
             color: Qt.rgba(1, 1, 1, 0.9)
@@ -201,7 +212,7 @@ Item {
 
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
-            text: clock.now.toLocaleTimeString(root.fr, "HH:mm")
+            text: clock.now.toLocaleTimeString(root.uiLocale, "HH:mm")
             color: "white"
             font.family: root.fontFamily
             font.pixelSize: 132
@@ -318,7 +329,7 @@ Item {
                 width: parent.width
                 height: parent.height
                 radius: height / 2
-                color: message.text === "Mot de passe incorrect" ? Qt.rgba(1, 0.35, 0.35, 0.18) : Qt.rgba(1, 1, 1, 0.14)
+                color: root.loginError ? Qt.rgba(1, 0.35, 0.35, 0.18) : Qt.rgba(1, 1, 1, 0.14)
                 border.width: 1
                 border.color: password.activeFocus ? Qt.rgba(1, 1, 1, 0.55) : Qt.rgba(1, 1, 1, 0.28)
 
@@ -362,7 +373,7 @@ Item {
                     Text {
                         anchors.verticalCenter: parent.verticalCenter
                         visible: password.text.length === 0
-                        text: "Mot de passe"
+                        text: root.isFr ? "Mot de passe" : "Password"
                         color: Qt.rgba(1, 1, 1, 0.55)
                         font.family: root.fontFamily
                         font.pixelSize: 15
@@ -419,7 +430,7 @@ Item {
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
             visible: keyboard.capsLock
-            text: "⇪ Majuscules activées"
+            text: root.isFr ? "⇪ Majuscules activées" : "⇪ Caps Lock is on"
             color: Qt.rgba(1, 1, 1, 0.7)
             font.family: root.fontFamily
             font.pixelSize: 13
@@ -438,7 +449,7 @@ Item {
             anchors.horizontalCenter: parent.horizontalCenter
             anchors.bottom: parent.bottom
             anchors.bottomMargin: 70
-            text: "Appuie sur une touche pour te connecter"
+            text: root.isFr ? "Appuie sur une touche pour te connecter" : "Press any key to sign in"
             color: "white"
             font.family: root.fontFamily
             font.pixelSize: 15
@@ -475,21 +486,21 @@ Item {
         GlassButton {
             visible: sddm.canSuspend
             icon: "󰒲"
-            label: "Veille"
+            label: root.isFr ? "Veille" : "Sleep"
             onClicked: sddm.suspend()
         }
 
         GlassButton {
             visible: sddm.canReboot
             icon: "󰜉"
-            label: "Redémarrer"
+            label: root.isFr ? "Redémarrer" : "Restart"
             onClicked: sddm.reboot()
         }
 
         GlassButton {
             visible: sddm.canPowerOff
             icon: "󰐥"
-            label: "Éteindre"
+            label: root.isFr ? "Éteindre" : "Shut down"
             onClicked: sddm.powerOff()
         }
     }

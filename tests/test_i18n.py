@@ -111,3 +111,31 @@ def test_placeholders_match_between_fr_and_en():
         if p_fr != p_en:
             bad.append(f"{fr!r} ({p_fr}) -> {target!r} ({p_en})")
     assert not bad, "Placeholders incohérents :\n" + "\n".join(bad)
+
+
+def test_nexus_and_sddm_bilingual_integrity():
+    en = _load_en_strings()
+    expected = {
+        "Alimentation": "Power",
+        "Capot, veille": "Lid, suspend",
+        "Mises à jour": "Updates",
+        "Mises à jour système": "System updates",
+        "Gérer les extensions": "Manage plugins",
+        "Applications par défaut, favoris, masquées": "Default apps, favourites, hidden",
+        "Intervalles d'actualisation, fournisseur des paroles": "Poll intervals, lyrics backend",
+        "Langue de l'interface, ville météo, unités d'affichage": "UI language, weather location, display units",
+        "Automatique": "Automatic",
+    }
+    for fr_key, en_val in expected.items():
+        assert en.get(fr_key) == en_val, f"Traduction incorrecte pour {fr_key!r} : {en.get(fr_key)!r}"
+
+    sddm_qml = (ROOT / "config/sddm/liquid-glass/Main.qml").read_text(encoding="utf-8")
+    assert "readonly property bool isFr" in sddm_qml
+    assert "Incorrect password" in sddm_qml
+    assert "Press any key to sign in" in sddm_qml
+    assert "Shut down" in sddm_qml
+
+    island_qml = (ROOT / "shell/modules/island/Island.qml").read_text(encoding="utf-8")
+    assert 'sum.startsWith("Screenshot")' in island_qml
+    tasks_qml = (ROOT / "shell/services/Tasks.qml").read_text(encoding="utf-8")
+    assert "tomorrow" in tasks_qml and "watch" in tasks_qml

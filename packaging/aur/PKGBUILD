@@ -2,12 +2,14 @@
 
 pkgname=ano-shell
 pkgver=1.2.0
-pkgrel=1
+pkgrel=2
 pkgdesc='Standalone Liquid Glass desktop shell for Hyprland (Quickshell + native Qt6 C++ plugins + CLI + Onde CLI)'
 arch=('x86_64' 'aarch64')
 url='https://github.com/Abdoul273/ano-shell'
 license=('GPL-3.0-only')
+install=ano-shell.install
 depends=(
+    # Wayland / Hyprland desktop, portals & session
     'quickshell'
     'hyprland'
     'xdg-desktop-portal'
@@ -15,6 +17,10 @@ depends=(
     'xdg-desktop-portal-gtk'
     'polkit-gnome'
     'gnome-keyring'
+    'sddm'
+    'accountsservice'
+    'xdg-user-dirs'
+    # Qt6 runtime
     'qt6-base'
     'qt6-declarative'
     'qt6-wayland'
@@ -23,6 +29,7 @@ depends=(
     'qt6-multimedia'
     'qt6-multimedia-ffmpeg'
     'qt6-quick3d'
+    # Audio, Bluetooth, Network, Power & Sensors
     'pipewire'
     'pipewire-pulse'
     'pipewire-alsa'
@@ -38,10 +45,24 @@ depends=(
     'brightnessctl'
     'ddcutil'
     'hyprsunset'
+    'hyprpicker'
     'gpu-screen-recorder'
+    # Complete Liquid Glass desktop apps & terminal suite
+    'kitty'
+    'fastfetch'
+    'nautilus'
+    'sushi'
+    'fish'
+    'starship'
+    'eza'
+    'zoxide'
+    'btop'
+    'pwvucontrol'
     'adw-gtk-theme'
+    'papirus-icon-theme'
     'sound-theme-freedesktop'
     'gtk4'
+    # Python & Wayland utilities
     'python'
     'python-gobject'
     'python-pillow'
@@ -67,29 +88,23 @@ depends=(
     'jq'
     'psmisc'
     'libxml2'
+    'fd'
+    # Fonts
     'ttf-material-symbols-variable'
     'ttf-cascadia-code-nerd'
     'ttf-jetbrains-mono-nerd'
+    'ttf-rubik-vf'
+    'noto-fonts'
+    'noto-fonts-emoji'
     'bash'
 )
 optdepends=(
-    'power-profiles-daemon: power profile switching'
-    'nautilus: Liquid Glass file manager'
-    'sushi: macOS-like Quick Look preview in Nautilus'
-    'kitty: Liquid Glass terminal & quick-access dropdown'
-    'fastfetch: styled system info'
-    'fish: configured interactive shell'
-    'starship: minimal transient prompt'
-    'eza: modern ls with icons'
-    'zoxide: smart cd'
-    'btop: terminal system monitor'
+    'power-profiles-daemon: power profile switching (skip if using tlp or tuned-ppd)'
+    'firefox: default web browser if Chrome is not installed'
     'darkly-bin: native translucent glass rendering for Qt/KDE apps'
     'qtengine: dynamic Qt6 color theme integration'
-    'ttf-rubik-vf: rounded UI font for SDDM and glass tools'
-    'sddm: Liquid Glass login screen'
-    'accountsservice: user avatar sync for SDDM'
     'fprintd: fingerprint unlock on lock screen'
-    'python-google-genai: Gemini AI support for Siri, Dictate and Write'
+    'python-google-genai: Gemini AI support for Siri, Dictate, Write and Agent OS'
 )
 makedepends=(
     'cmake'

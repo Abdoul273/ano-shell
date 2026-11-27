@@ -6,6 +6,7 @@ import subprocess
 import sys
 from argparse import Namespace
 
+from ano_shell.i18n import tr
 from ano_shell.paths import APP_NAME, app_cache_dir
 
 
@@ -41,7 +42,10 @@ def run_shell(args: Namespace) -> int:
     if args.kill:
         if not getattr(args, "force", False) and is_locked():
             print(
-                "Refus d'arrêter ano-shell pendant que l'écran est verrouillé (utilisez --force pour outrepasser).",
+                tr(
+                    "Refus d'arrêter ano-shell pendant que l'écran est verrouillé (utilisez --force pour outrepasser).",
+                    "Refusing to stop ano-shell while the screen is locked (use --force to override).",
+                ),
                 file=sys.stderr,
             )
             return 2

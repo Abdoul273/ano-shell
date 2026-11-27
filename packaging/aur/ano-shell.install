@@ -1,0 +1,51 @@
+post_install() {
+    case "${LC_ALL:-${LC_MESSAGES:-${LANG:-en}}}" in
+        fr*|FR*)
+            cat <<'EOF'
+
+==> Ano Shell est installé !
+    Pour déployer automatiquement les configurations (Hyprland, Kitty, Fastfetch,
+    Fish, Starship, Nautilus/GTK Liquid Glass, SDDM, curseur macOS et langue FR/EN),
+    lance en tant qu'utilisateur normal (pas en root) :
+
+      ano-shell setup
+
+    Tu peux aussi choisir ta langue et ton profil directement :
+      ano-shell setup --lang fr --profile auto
+
+EOF
+            ;;
+        *)
+            cat <<'EOF'
+
+==> Ano Shell is installed!
+    To automatically deploy your desktop configs (Hyprland, Kitty, Fastfetch,
+    Fish, Starship, Nautilus/GTK Liquid Glass, SDDM, macOS cursor & EN/FR language),
+    run as your regular user (not root):
+
+      ano-shell setup
+
+    Or pick language & performance profile directly:
+      ano-shell setup --lang en --profile auto
+
+EOF
+            ;;
+    esac
+}
+
+post_upgrade() {
+    case "${LC_ALL:-${LC_MESSAGES:-${LANG:-en}}}" in
+        fr*|FR*)
+            cat <<'EOF'
+==> Ano Shell mis à jour. Lancez `ano-shell setup` pour rafraîchir vos configs utilisateur,
+    puis `ano-shell doctor` pour vérifier l'alignement Qt6.
+EOF
+            ;;
+        *)
+            cat <<'EOF'
+==> Ano Shell upgraded. Run `ano-shell setup` to refresh user configs,
+    then `ano-shell doctor` to verify Qt6 alignment.
+EOF
+            ;;
+    esac
+}

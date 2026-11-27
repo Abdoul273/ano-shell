@@ -236,10 +236,15 @@ Item {
     property bool shotSaved
     property real shotIn: 1
 
-    readonly property string shotsDir: `${Quickshell.env("HOME")}/Images/Captures`
+    readonly property string shotsDir: {
+        const pics = Quickshell.env("XDG_PICTURES_DIR") || `${Quickshell.env("HOME")}/Pictures`;
+        return `${pics}/${I18n.isFr ? "Captures" : "Screenshots"}`;
+    }
 
     function isShot(n: var): bool {
-        return (n?.appName ?? "").startsWith("ano-shell") && (n?.summary ?? "").startsWith("Capture d'écran");
+        const app = n?.appName ?? "";
+        const sum = n?.summary ?? "";
+        return app.startsWith("ano-shell") && (sum.startsWith("Capture d'écran") || sum.startsWith("Screenshot"));
     }
 
     function shotSource(n: var): string {

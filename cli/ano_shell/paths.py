@@ -48,6 +48,7 @@ app_cache_dir = cache_dir / APP_NAME
 cli_config_path = app_config_dir / "cli.json"
 glass_config_path = app_config_dir / "glass.json"
 island_config_path = app_config_dir / "island.json"
+lang_config_path = app_config_dir / "lang.json"
 shell_config_path = app_config_dir / "shell.json"
 user_templates_dir = app_config_dir / "templates"
 
@@ -63,8 +64,21 @@ recording_notif_path = app_state_dir / "record/notifid.txt"
 scheme_cache_dir = app_cache_dir / "schemes"
 wallpapers_cache_dir = app_cache_dir / "wallpapers"
 
-screenshots_dir = pictures_dir / "Captures"
-recordings_dir = videos_dir / "ENREGISTREMENTS ECRAN"
+
+def _localized_media_dir(base: Path, fr_name: str, en_name: str) -> Path:
+    fr_path = base / fr_name
+    en_path = base / en_name
+    if fr_path.exists():
+        return fr_path
+    if en_path.exists():
+        return en_path
+    from ano_shell.i18n import is_fr
+
+    return fr_path if is_fr() else en_path
+
+
+screenshots_dir = _localized_media_dir(pictures_dir, "Captures", "Screenshots")
+recordings_dir = _localized_media_dir(videos_dir, "ENREGISTREMENTS ECRAN", "Recordings")
 
 pkg_data_dir = Path(__file__).resolve().parent / "data"
 scheme_data_dir = pkg_data_dir / "schemes"

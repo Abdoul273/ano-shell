@@ -1,9 +1,25 @@
 #!/usr/bin/env bash
 # ============================================================================
-#  Ano Shell — Désinstallation propre et réversible
+#  Ano Shell — Clean & reversible uninstaller (EN / FR)
 # ============================================================================
 
 set -euo pipefail
+
+detect_ui_lang() {
+    local raw="${ANOSHELL_LANG:-}"
+    if [[ -z "$raw" && -f "$HOME/.config/ano-shell/lang.json" ]]; then
+        raw="$(sed -n 's/.*"lang"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$HOME/.config/ano-shell/lang.json" | head -n1 || true)"
+        [[ "$raw" == "auto" ]] && raw=""
+    fi
+    [[ -z "$raw" ]] && raw="${LC_ALL:-${LC_MESSAGES:-${LANG:-en}}}"
+    case "${raw,,}" in
+        fr*) echo "fr" ;;
+        *)   echo "en" ;;
+    esac
+}
+
+UI_LANG="$(detect_ui_lang)"
+t() { [[ "$UI_LANG" == "fr" ]] && printf '%s' "$1" || printf '%s' "$2"; }
 
 BACKUP_ROOT="$HOME/.local/share/ano-shell/backups"
 LATEST_BACKUP=""
@@ -11,7 +27,7 @@ if [[ -d "$BACKUP_ROOT" ]]; then
     LATEST_BACKUP="$(ls -1t "$BACKUP_ROOT" | head -n 1 || true)"
 fi
 
-echo "==> Arrêt des services utilisateur Ano Shell"
+echo "==> $(t "Arrêt des services utilisateur Ano Shell" "Stopping Ano Shell user services")"
 systemctl --user disable --now \
     ano-shell-theme.path \
     ano-shell-login-sync.path \
@@ -37,11 +53,11 @@ if [[ -L /usr/local/bin/onde-cli ]] && [[ "$(readlink -f /usr/local/bin/onde-cli
     sudo rm -f /usr/local/bin/onde-cli 2>/dev/null || true
 fi
 
-echo "==> Retrait des fichiers utilisateur Ano Shell"
+echo "==> $(t "Retrait des fichiers utilisateur Ano Shell" "Removing Ano Shell user files")"
 rm -rf "$HOME/.config/quickshell/ano-shell"
 
 if [[ -n "$LATEST_BACKUP" && -f "$BACKUP_ROOT/$LATEST_BACKUP/manifest" ]]; then
-    echo "==> Restauration de la sauvegarde $LATEST_BACKUP"
+    echo "==> $(t "Restauration de la sauvegarde $LATEST_BACKUP" "Restoring backup $LATEST_BACKUP")"
     while IFS= read -r target; do
         [[ -n "$target" ]] || continue
         rel="${target#"$HOME/"}"
@@ -50,9 +66,11 @@ if [[ -n "$LATEST_BACKUP" && -f "$BACKUP_ROOT/$LATEST_BACKUP/manifest" ]]; then
             rm -rf "$target"
             mkdir -p "$(dirname "$target")"
             cp -a "$src" "$target"
-            echo "  ✓ Restauré : $target"
+            echo "  ✓ $(t "Restauré" "Restored") : $target"
         fi
     done < "$BACKUP_ROOT/$LATEST_BACKUP/manifest"
 fi
 
-echo "Désinstallation terminée. Vos données dans ~/.config/ano-shell ont été conservées."
+echo "$(t \
+    "Désinstallation terminée. Vos données dans ~/.config/ano-shell ont été conservées." \
+    "Uninstall complete. Your personal data in ~/.config/ano-shell was preserved.")"
