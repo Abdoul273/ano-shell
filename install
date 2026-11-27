@@ -510,6 +510,9 @@ fi
 if (( FULL && ! NO_DEPS )); then
     install_system_packages
     install_aur_packages
+elif (( FROM_SYSTEM_PKG )) && { ! command -v qs >/dev/null 2>&1 || ! python3 -c "import materialyoucolor" >/dev/null 2>&1; }; then
+    # Binary Pacman repo installs all official Arch deps; install missing AUR companions automatically
+    install_aur_packages
 fi
 
 if (( ! NO_DEPS )); then

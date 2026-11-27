@@ -1,0 +1,155 @@
+name: Pacman Binary Repository
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      pkgver:
+        description: "Version override (defaults to PKGBUILD pkgver + git short SHA)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pacman-repo-pages"
+  cancel-in-progress: false
+
+jobs:
+  build-pacman-repo:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel cmake ninja git \
+            qt6-base qt6-declarative qt6-shadertools \
+            fftw libpipewire libqalculate lm_sensors \
+            python python-build python-installer python-setuptools python-wheel
+
+      - name: Build Arch binary package (.pkg.tar.zst)
+        env:
+          INPUT_PKGVER: ${{ github.event.inputs.pkgver }}
+        run: |
+          useradd -m builder
+          mkdir -p /tmp/pkgbuild /tmp/repo/x86_64
+
+          # Determine package version (tag vX.Y.Z -> X.Y.Z, otherwise pkgver.r<count>.g<sha>)
+          if [[ -n "$INPUT_PKGVER" ]]; then
+            PKGVER="$INPUT_PKGVER"
+          elif [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
+            PKGVER="${GITHUB_REF#refs/tags/v}"
+          else
+            BASE_VER="$(sed -n 's/^pkgver=//p' packaging/aur/PKGBUILD | head -n1)"
+            REV_CNT="$(git rev-list --count HEAD)"
+            REV_SHA="$(git rev-parse --short HEAD)"
+            PKGVER="${BASE_VER}.r${REV_CNT}.g${REV_SHA}"
+          fi
+          echo "Building ano-shell ${PKGVER}"
+
+          # Build local source tarball matching PKGBUILD layout
+          git archive --format=tar.gz --prefix="ano-shell-${PKGVER}/" HEAD > "/tmp/pkgbuild/ano-shell-${PKGVER}.tar.gz"
+          cp packaging/aur/PKGBUILD packaging/aur/ano-shell.install /tmp/pkgbuild/
+
+          # Adapt PKGBUILD for pure official Arch repos (move any AUR-only dep to optdepends so `pacman -S ano-shell` never fails on vanilla Arch)
+          python3 - "/tmp/pkgbuild/PKGBUILD" "$PKGVER" <<'PY'
+          import re, subprocess, sys
+          from pathlib import Path
+
+          pb_path = Path(sys.argv[1])
+          pkgver = sys.argv[2]
+          txt = pb_path.read_text(encoding="utf-8")
+
+          sync_pkgs = set(subprocess.check_output(["pacman", "-Slq"], text=True).splitlines())
+
+          def filter_depends(m):
+              block = m.group(1)
+              kept, moved = [], []
+              for pkg in re.findall(r"'([^']+)'", block):
+                  if pkg in sync_pkgs:
+                      kept.append(f"    '{pkg}'")
+                  else:
+                      moved.append(pkg)
+              print(f"Binary repo depends: {len(kept)} official, {len(moved)} deferred to ano-shell setup: {moved}")
+              return "depends=(\n" + "\n".join(kept) + "\n)"
+
+          txt = re.sub(r"^pkgver=.*$", f"pkgver={pkgver}", txt, flags=re.MULTILINE)
+          txt = re.sub(r"^pkgrel=.*$", "pkgrel=1", txt, flags=re.MULTILINE)
+          txt = re.sub(r"^source=\(.*?\)$", 'source=("${pkgname}-${pkgver}.tar.gz")', txt, flags=re.MULTILINE)
+          txt = re.sub(r"depends=\((.*?)\)", filter_depends, txt, count=1, flags=re.DOTALL)
+          txt = txt.replace('AUR (${pkgname})', 'Ano Shell Pacman Repo (${pkgname})')
+          pb_path.write_text(txt, encoding="utf-8")
+          PY
+
+          chown -R builder:builder /tmp/pkgbuild
+          su - builder -c 'cd /tmp/pkgbuild && makepkg -f --nodeps --noconfirm'
+
+          cp /tmp/pkgbuild/ano-shell-*.pkg.tar.zst /tmp/repo/x86_64/
+          repo-add /tmp/repo/x86_64/ano-shell.db.tar.gz /tmp/repo/x86_64/ano-shell-*.pkg.tar.zst
+
+          # GitHub Pages serves regular files reliably (replace symlinks created by repo-add)
+          rm -f /tmp/repo/x86_64/ano-shell.db /tmp/repo/x86_64/ano-shell.files
+          cp /tmp/repo/x86_64/ano-shell.db.tar.gz /tmp/repo/x86_64/ano-shell.db
+          cp /tmp/repo/x86_64/ano-shell.files.tar.gz /tmp/repo/x86_64/ano-shell.files
+
+          cp packaging/pacman/add-repo.sh /tmp/repo/add-repo.sh
+          cat > /tmp/repo/index.html <<HTML
+          <!doctype html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8" />
+            <meta name="viewport" content="width=device-width,initial-scale=1" />
+            <title>Ano Shell — Arch Linux Pacman Repository</title>
+            <style>
+              body{font-family:system-ui,-apple-system,sans-serif;background:#0d1017;color:#e6edf3;max-width:760px;margin:48px auto;padding:0 20px;line-height:1.6}
+              pre{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:16px;overflow-x:auto}
+              code{font-family:ui-monospace,SFMono-Regular,monospace;color:#79c0ff}
+              a{color:#79c0ff}
+            </style>
+          </head>
+          <body>
+            <h1>🫧 Ano Shell — Arch Linux Pacman Repository</h1>
+            <p>Pre-built binary package (<code>ano-shell ${PKGVER}</code>) for Arch Linux &amp; derivatives (<code>x86_64</code>).</p>
+            <h2>1-command install</h2>
+            <pre><code>curl -fsSL https://abdoul273.github.io/ano-shell/add-repo.sh | bash</code></pre>
+            <h2>Or add manually to <code>/etc/pacman.conf</code></h2>
+            <pre><code>[ano-shell]
+          SigLevel = Optional TrustAll
+          Server = https://abdoul273.github.io/ano-shell/\$arch</code></pre>
+            <pre><code>sudo pacman -Syu ano-shell &amp;&amp; ano-shell setup</code></pre>
+            <p><a href="https://github.com/Abdoul273/ano-shell">GitHub repository</a></p>
+          </body>
+          </html>
+          HTML
+
+          mkdir -p "${GITHUB_WORKSPACE}/_site"
+          cp -a /tmp/repo/. "${GITHUB_WORKSPACE}/_site/"
+          ls -la "${GITHUB_WORKSPACE}/_site/x86_64/"
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy-pages:
+    needs: build-pacman-repo
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

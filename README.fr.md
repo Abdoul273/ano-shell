@@ -138,10 +138,14 @@ Tu viens d'installer Arch Linux (ou tu veux l'installer) et tu n'as jamais confi
 Tape cette unique commande puis appuie sur **Entrée** :
 
 ```bash
+# Option A — Dépôt Pacman binaire précompilé (le plus rapide, sans compilation C++) :
+curl -fsSL https://abdoul273.github.io/ano-shell/add-repo.sh | bash
+
+# Option B — Installation complète depuis les sources GitHub :
 curl -fsSL https://raw.githubusercontent.com/Abdoul273/ano-shell/main/bootstrap.sh | bash
 ```
 
-*(Ou construis et installe le paquet Arch localement via `cd packaging/aur && makepkg -si && ano-shell setup`.)*
+*(Ou ajoute `[ano-shell]` dans `/etc/pacman.conf` avec `Server = https://abdoul273.github.io/ano-shell/$arch`, puis lance `sudo pacman -Syu ano-shell && ano-shell setup`.)*
 
 > **100 % bilingue FR / EN :** l'installeur détecte automatiquement la langue du système et te propose **English** ou **Français** (ou `--lang fr` / `--lang en`). Change de langue à tout moment via `ano-shell lang fr|en|auto` ou **Paramètres (`Super + I`) → Langue et région**.
 

@@ -132,10 +132,14 @@ Never configured Hyprland before? Follow these **4 simple steps**:
 ### Step 3 — Run the 1-command automatic installer
 
 ```bash
+# Option A — Official pre-built Pacman binary repo (fastest, no C++ compilation):
+curl -fsSL https://abdoul273.github.io/ano-shell/add-repo.sh | bash
+
+# Option B — Full source bootstrap from GitHub:
 curl -fsSL https://raw.githubusercontent.com/Abdoul273/ano-shell/main/bootstrap.sh | bash
 ```
 
-*(Or build & install the Arch package locally via `cd packaging/aur && makepkg -si && ano-shell setup`.)*
+*(Or add `[ano-shell]` manually to `/etc/pacman.conf` with `Server = https://abdoul273.github.io/ano-shell/$arch`, then run `sudo pacman -Syu ano-shell && ano-shell setup`.)*
 
 > **Bilingual EN / FR:** the installer automatically detects your system locale and lets you choose **English** or **Français** (or pass `--lang en` / `--lang fr`). Switch anytime via `ano-shell lang en|fr|auto` or **Settings (`Super + I`) → Language & region**.
 
