@@ -136,12 +136,12 @@ install_system_packages() {
         brightnessctl ddcutil lm_sensors fftw libqalculate libpipewire
         # Qt6 & outils de compilation des plugins AnoShell.*
         cmake ninja pkgconf qt6-base qt6-declarative qt6-wayland qt6-svg
-        qt6-imageformats qt6-multimedia qt6-multimedia-ffmpeg qt6-shadertools
+        qt6-imageformats qt6-multimedia qt6-multimedia-ffmpeg qt6-quick3d qt6-shadertools
         # Applis & environnement terminal complet (Nautilus, Kitty, Fastfetch, Fish, Starship, Onde CLI)
         nautilus sushi kitty fastfetch fish starship eza zoxide btop adw-gtk-theme
         firefox pwvucontrol hyprpicker hyprsunset mpv ffmpeg yt-dlp sound-theme-freedesktop
         # Outils Wayland, GTK4 & Python (ano-shell + outils bin/ + onde-cli)
-        python python-pip python-gobject gtk4 python-pillow python-rich python-mutagen
+        python python-pip python-setuptools python-wheel python-gobject gtk4 python-pillow python-rich python-mutagen
         python-numpy python-scipy python-flask
         grim slurp wl-clipboard cliphist swappy wtype ydotool libnotify dconf jq psmisc libxml2 fd
         # Polices

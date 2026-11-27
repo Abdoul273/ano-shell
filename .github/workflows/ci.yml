@@ -14,7 +14,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install dev tools
-        run: python -m pip install ruff pytest pillow materialyoucolor
+        run: python -m pip install ruff pytest pillow materialyoucolor build setuptools wheel
+      - name: Verify CLI package builds cleanly
+        run: python -m build --wheel --no-isolation --outdir /tmp/ano-wheel cli
       - name: Lint CLI & tests with ruff
         run: ruff check cli/ tests/ tools/
       - name: Compile-check and lint bin/ Python scripts
