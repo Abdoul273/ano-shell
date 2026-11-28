@@ -101,13 +101,37 @@ Item {
     property bool swarmDeploying: false
     property string swarmProjectFilter: ""
 
-    // ── Navigation clavier, Palette projets & File permissions ──
+    // ── Navigation clavier, Palette projets, Aide, Worktrees & Broadcast ──
     property int permIdx: 0
     property bool projectPickerOpen: false
     property string projectPickerQuery: ""
     property int projectPickerCursor: 0
+    property bool helpOpen: false
+    property var worktrees: []
+    property bool broadcasting: false
+    property string fleetFilter: ""
     property var dockHistory: []
     property int dockHistIdx: -1
+
+    readonly property int conflictRepoCount: {
+        let n = 0;
+        for (const k in repoAgentCounts)
+            if (repoAgentCounts[k] > 1)
+                n += 1;
+        return n;
+    }
+
+    readonly property int liveCliCount: Agents.shown.filter(a => a.alive && a.surface === "cli").length
+
+    readonly property var filteredFleet: {
+        const q = (fleetFilter || "").trim().toLowerCase();
+        if (!q)
+            return Agents.shown;
+        return Agents.shown.filter(a => (a.project || "").toLowerCase().indexOf(q) >= 0
+            || (a.kind || "").toLowerCase().indexOf(q) >= 0
+            || (a.branch || "").toLowerCase().indexOf(q) >= 0
+            || (a.model || "").toLowerCase().indexOf(q) >= 0);
+    }
 
     readonly property var repoAgentCounts: {
         const counts = {};
@@ -170,12 +194,12 @@ Item {
 
     // Agent déjà ouvert correspondant au moteur choisi dans le Command Dock
     readonly property var dockExistingAgent: {
-        if (dockTarget === "ai")
+        if (dockTarget === "ai" || dockTarget === "all")
             return null;
         return Agents.shown.find(a => a.kind === dockTarget && a.alive) ?? Agents.shown.find(a => a.kind === dockTarget) ?? null;
     }
 
-    readonly property color dockTint: dockTarget === "ai" ? aiTint : Agents.kindColour(dockTarget)
+    readonly property color dockTint: dockTarget === "ai" ? aiTint : (dockTarget === "all" ? orange : Agents.kindColour(dockTarget))
 
     readonly property var currentProject: projects.length > 0 ? projects[Math.max(0, Math.min(projectIdx, projects.length - 1))] : null
 
@@ -449,6 +473,88 @@ Item {
             projectIdx = idx;
     }
 
+    function refreshWorktrees(): void {
+        const cwd = currentProject?.cwd ?? "";
+        if (!cwd) {
+            worktrees = [];
+            return;
+        }
+        if (wtListProc.running)
+            wtListProc.running = false;
+        wtListProc.command = [root.agentsBin, "worktrees", cwd];
+        wtListProc.running = true;
+    }
+
+    function removeWorktree(wtPath: string): void {
+        const cwd = currentProject?.cwd ?? "";
+        if (!cwd || !wtPath || wtRemoveProc.running)
+            return;
+        wtRemoveProc.command = [root.agentsBin, "worktree-remove", cwd, wtPath];
+        wtRemoveProc.running = true;
+    }
+
+    function openWorktreeDiff(wtPath: string): void {
+        if (!wtPath)
+            return;
+        diffFile = "";
+        viewTab = 1;
+        inspectorTab = 2;
+        diffLoading = true;
+        if (diffProc.running)
+            diffProc.running = false;
+        diffProc.command = [root.agentsBin, "diff", wtPath];
+        diffProc.running = true;
+    }
+
+    function broadcastToAll(msg: string): void {
+        const txt = (msg || "").trim();
+        if (!txt || broadcasting)
+            return;
+        broadcasting = true;
+        broadcastProc.command = [root.agentsBin, "broadcast", txt];
+        broadcastProc.running = true;
+    }
+
+    function stopAllWorking(): void {
+        if (stopAllProc.running)
+            return;
+        stopAllProc.running = true;
+    }
+
+    function stepFleet(delta: int): void {
+        const arr = Agents.shown;
+        if (arr.length === 0)
+            return;
+        const curIdx = arr.findIndex(a => a.id === selectedAgent?.id);
+        const nextIdx = curIdx < 0 ? 0 : (curIdx + delta + arr.length) % arr.length;
+        selectedId = arr[nextIdx].id;
+        if (viewTab !== 1)
+            viewTab = 1;
+    }
+
+    function copyChatTranscript(): void {
+        if (chatHistory.length === 0)
+            return;
+        const lines = [];
+        for (const m of chatHistory) {
+            lines.push(m.role === "user" ? `### Moi\n${m.text}` : `### Katana AI\n${m.text}`);
+            if (m.executed && m.executed.length > 0)
+                lines.push(m.executed.map(e => `- [${e.ok ? "OK" : "ERR"}] ${e.label}`).join("\n"));
+        }
+        copyText(lines.join("\n\n"), I18n.tr("Conversation Katana copiée ✓"));
+    }
+
+    function closeTopOverlayOrStudio(): void {
+        if (helpOpen)
+            helpOpen = false;
+        else if (projectPickerOpen)
+            closeProjectPicker();
+        else if (modelPickerOpen)
+            closeModelPicker();
+        else
+            close();
+    }
+
     function openProjectPicker(): void {
         projectPickerOpen = true;
         projectPickerQuery = "";
@@ -585,6 +691,14 @@ Item {
             askCommander(msg);
             return;
         }
+        if (dockTarget === "all") {
+            if (!msg) {
+                flashToast(I18n.tr("Écris un ordre à diffuser à tous les agents CLI"));
+                return;
+            }
+            broadcastToAll(msg);
+            return;
+        }
         // Si une session de ce moteur existe déjà et qu'on écrit un ordre, on lui parle en direct !
         if (msg && dockExistingAgent) {
             sendDirectToAgent(dockExistingAgent, msg);
@@ -663,6 +777,7 @@ Item {
             dockInput.forceActiveFocus();
             openFocusTimer.restart();
         } else {
+            helpOpen = false;
             modelPickerOpen = false;
             projectPickerOpen = false;
             if (dictating && dictProc.running) {
@@ -670,6 +785,11 @@ Item {
                 dictating = false;
             }
         }
+    }
+
+    onProjectIdxChanged: {
+        if (shown && viewTab === 3)
+            refreshWorktrees();
     }
 
     onSelectedIdChanged: {
@@ -707,6 +827,8 @@ Item {
             canvasWires.requestPaint();
         if (viewTab === 2)
             openFocusTimer.restart();
+        if (viewTab === 3)
+            refreshWorktrees();
     }
 
     Connections {
@@ -1085,7 +1207,72 @@ Item {
         }
     }
 
+    Process {
+        id: wtListProc
+
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    const arr = JSON.parse(text);
+                    if (Array.isArray(arr))
+                        root.worktrees = arr;
+                } catch (e) {
+                    root.worktrees = [];
+                }
+            }
+        }
+    }
+
+    Process {
+        id: wtRemoveProc
+
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    const r = JSON.parse(text);
+                    root.flashToast((r.ok ? "✓ " : "✕ ") + (r.detail || ""));
+                } catch (e) {}
+                root.refreshWorktrees();
+            }
+        }
+    }
+
+    Process {
+        id: broadcastProc
+
+        stdout: StdioCollector {
+            onStreamFinished: {
+                root.broadcasting = false;
+                try {
+                    const r = JSON.parse(text);
+                    root.flashToast((r.ok ? "✓ " : "✕ ") + (r.detail || ""));
+                } catch (e) {
+                    root.flashToast(I18n.tr("Ordre diffusé"));
+                }
+            }
+        }
+        onExited: root.broadcasting = false
+    }
+
+    Process {
+        id: stopAllProc
+
+        command: [root.agentsBin, "stop-all"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    const r = JSON.parse(text);
+                    root.flashToast((r.ok ? "✓ " : "✕ ") + (r.detail || I18n.tr("Agents interrompus")));
+                } catch (e) {}
+            }
+        }
+    }
+
     // ── Raccourcis clavier globaux du Studio (actifs uniquement quand le Studio est ouvert) ──
+    Shortcut { enabled: root.shown; sequence: "F1"; onActivated: root.helpOpen = !root.helpOpen }
+    Shortcut { enabled: root.shown; sequence: "Ctrl+/"; onActivated: root.helpOpen = !root.helpOpen }
+    Shortcut { enabled: root.shown; sequence: "Alt+Up"; onActivated: root.stepFleet(-1) }
+    Shortcut { enabled: root.shown; sequence: "Alt+Down"; onActivated: root.stepFleet(1) }
     Shortcut { enabled: root.shown; sequence: "Ctrl+1"; onActivated: root.viewTab = 0 }
     Shortcut { enabled: root.shown; sequence: "Ctrl+2"; onActivated: root.viewTab = 1 }
     Shortcut { enabled: root.shown; sequence: "Ctrl+3"; onActivated: root.viewTab = 2 }
@@ -1124,14 +1311,7 @@ Item {
         opacity: root.reveal
         scale: 0.96 + 0.04 * root.reveal
 
-        Keys.onEscapePressed: {
-            if (root.projectPickerOpen)
-                root.closeProjectPicker();
-            else if (root.modelPickerOpen)
-                root.closeModelPicker();
-            else
-                root.close();
-        }
+        Keys.onEscapePressed: root.closeTopOverlayOrStudio()
 
         // Aura supérieure colorée par l'agent leader
         Rectangle {
@@ -1340,11 +1520,53 @@ Item {
                 }
             }
 
-            // Droite : Nettoyer, Dictée vocale, Fermer
+            // Droite : Stop tout (urgence), Nettoyer, Aide raccourcis, Dictée vocale, Fermer
             Row {
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 7
+
+                Rectangle {
+                    visible: Agents.working >= 2
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: stopAllRow.implicitWidth + 14
+                    height: 28
+                    radius: 14
+                    color: Qt.alpha(root.red, stopAllArea.containsMouse ? 0.28 : 0.16)
+                    border.width: 0.6
+                    border.color: Qt.alpha(root.red, 0.56)
+
+                    Row {
+                        id: stopAllRow
+
+                        anchors.centerIn: parent
+                        spacing: 4
+
+                        MaterialIcon {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "stop_circle"
+                            color: root.red
+                            fontStyle: Tokens.font.icon.size(13).build()
+                            fill: 1
+                        }
+                        StyledText {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: I18n.tr("Stop tout")
+                            color: root.red
+                            font.pointSize: 7.5
+                            font.weight: Font.Black
+                        }
+                    }
+
+                    MouseArea {
+                        id: stopAllArea
+
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.stopAllWorking()
+                    }
+                }
 
                 Rectangle {
                     visible: Agents.doneShown > 0
@@ -1384,6 +1606,33 @@ Item {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: Agents.clean()
+                    }
+                }
+
+                // Aide raccourcis clavier (F1 / Ctrl+/)
+                Rectangle {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 30
+                    height: 30
+                    radius: 15
+                    color: root.helpOpen ? Qt.alpha(root.leadTint, 0.28) : Qt.alpha(root.fg, helpArea.containsMouse ? 0.16 : 0.07)
+                    border.width: 0.5
+                    border.color: root.helpOpen ? Qt.alpha(root.leadTint, 0.62) : Qt.alpha(root.fg, 0.16)
+
+                    MaterialIcon {
+                        anchors.centerIn: parent
+                        text: "keyboard"
+                        color: root.helpOpen ? root.leadTint : root.fgDim
+                        fontStyle: Tokens.font.icon.size(14).build()
+                    }
+
+                    MouseArea {
+                        id: helpArea
+
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.helpOpen = !root.helpOpen
                     }
                 }
 
@@ -2554,14 +2803,67 @@ Item {
                         }
                     }
 
+                    // HUD Télémétrie temps réel (bas-gauche du Canvas)
+                    Rectangle {
+                        visible: root.visibleAgents.length > 0
+                        anchors.bottom: parent.bottom
+                        anchors.left: parent.left
+                        anchors.margins: 12
+                        z: 25
+                        width: hudRow.implicitWidth + 16
+                        height: 24
+                        radius: 12
+                        color: Qt.alpha(Colours.palette.m3surface, Colours.light ? 0.8 : 0.72)
+                        border.width: 0.5
+                        border.color: root.conflictRepoCount > 0 ? Qt.alpha(root.orange, 0.52) : Qt.alpha(root.fg, 0.14)
+
+                        Row {
+                            id: hudRow
+
+                            anchors.centerIn: parent
+                            spacing: 8
+
+                            StyledText {
+                                visible: Agents.totalFiles > 0
+                                text: I18n.tr("%1 fich. modifiés").arg(Agents.totalFiles)
+                                color: root.fgDim
+                                font.pointSize: 7.1
+                                font.weight: Font.DemiBold
+                                font.features: { "tnum": 1 }
+                            }
+                            StyledText {
+                                visible: Agents.totalTokens > 0
+                                text: `${Agents.fmtTokens(Agents.totalTokens)} tok`
+                                color: root.fgDim
+                                font.pointSize: 7.1
+                                font.weight: Font.DemiBold
+                                font.features: { "tnum": 1 }
+                            }
+                            StyledText {
+                                visible: root.conflictRepoCount > 0
+                                text: I18n.tr("⚠ %1 conflit(s) repo").arg(root.conflictRepoCount)
+                                color: root.orange
+                                font.pointSize: 7.1
+                                font.weight: Font.Black
+                            }
+                            StyledText {
+                                visible: Agents.totalFiles === 0 && Agents.totalTokens === 0 && root.conflictRepoCount === 0
+                                text: I18n.tr("%1 session(s) sur le canvas").arg(root.visibleAgents.length)
+                                color: root.fgDim
+                                font.pointSize: 7.1
+                                font.weight: Font.Medium
+                            }
+                        }
+                    }
+
                     StyledText {
                         visible: root.visibleAgents.length > 0
                         anchors.bottom: parent.bottom
                         anchors.right: parent.right
                         anchors.margins: 12
-                        text: I18n.tr("Glisse une carte pour organiser · Double-clic pour parler à l'agent")
+                        text: I18n.tr("Glisser fond = déplacer · Molette = zoom · Double-clic = réaligner")
                         color: root.fgMute
-                        font.pointSize: 7.2
+                        font.pointSize: 7.1
                     }
                 }
             }
@@ -2594,9 +2896,55 @@ Item {
                             font.letterSpacing: 0.7
                         }
 
+                        // Filtre rapide flotte (visible dès 4 sessions)
+                        Rectangle {
+                            visible: Agents.shown.length >= 4
+                            width: parent.width
+                            height: 28
+                            radius: 14
+                            color: Qt.alpha(root.fg, 0.06)
+                            border.width: 0.5
+                            border.color: fleetSearchInput.activeFocus ? Qt.alpha(root.leadTint, 0.6) : Qt.alpha(root.fg, 0.14)
+
+                            Row {
+                                anchors.fill: parent
+                                anchors.leftMargin: 9
+                                anchors.rightMargin: 9
+                                spacing: 5
+
+                                MaterialIcon {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "search"
+                                    color: root.fgDim
+                                    fontStyle: Tokens.font.icon.size(12).build()
+                                }
+                                TextInput {
+                                    id: fleetSearchInput
+
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: parent.width - 18
+                                    height: 22
+                                    verticalAlignment: Text.AlignVCenter
+                                    color: root.fg
+                                    font.pointSize: 7.6
+                                    clip: true
+                                    text: root.fleetFilter
+                                    onTextChanged: root.fleetFilter = text
+
+                                    StyledText {
+                                        visible: fleetSearchInput.text.length === 0
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: I18n.tr("Filtrer la flotte…")
+                                        color: root.fgMute
+                                        font.pointSize: 7.4
+                                    }
+                                }
+                            }
+                        }
+
                         Flickable {
                             width: parent.width
-                            height: parent.height - 26
+                            height: parent.height - (Agents.shown.length >= 4 ? 62 : 26)
                             contentWidth: width
                             contentHeight: fleetCol.implicitHeight
                             clip: true
@@ -2609,7 +2957,7 @@ Item {
                                 spacing: 6
 
                                 Repeater {
-                                    model: Agents.shown
+                                    model: root.filteredFleet
 
                                     Rectangle {
                                         id: fItem
@@ -2731,14 +3079,17 @@ Item {
                         anchors.margins: 14
                         spacing: 10
 
-                        // En-tête inspecteur
+                        // En-tête inspecteur (anti-chevauchement garanti)
                         Item {
                             width: parent.width
                             height: 42
 
                             Row {
                                 anchors.left: parent.left
+                                anchors.right: inspectorHdrBtns.left
+                                anchors.rightMargin: 8
                                 anchors.verticalCenter: parent.verticalCenter
+                                clip: true
                                 spacing: 10
 
                                 MiniSpinner {
@@ -2823,6 +3174,8 @@ Item {
                             }
 
                             Row {
+                                id: inspectorHdrBtns
+
                                 anchors.right: parent.right
                                 anchors.verticalCenter: parent.verticalCenter
                                 spacing: 6
@@ -3561,14 +3914,7 @@ Item {
                                     clip: true
                                     selectByMouse: true
                                     activeFocusOnPress: true
-                                    Keys.onEscapePressed: {
-            if (root.projectPickerOpen)
-                root.closeProjectPicker();
-            else if (root.modelPickerOpen)
-                root.closeModelPicker();
-            else
-                root.close();
-        }
+                                    Keys.onEscapePressed: root.closeTopOverlayOrStudio()
                                     onAccepted: {
                                         if (text.trim()) {
                                             root.sendDirectToAgent(inspectorPane.ag, text);
@@ -3662,14 +4008,24 @@ Item {
                             }
                         }
 
-                        ActionChip {
+                        Row {
                             visible: root.chatHistory.length > 0
                             anchors.right: parent.right
                             anchors.verticalCenter: parent.verticalCenter
-                            label: I18n.tr("Effacer")
-                            icon: "delete_sweep"
-                            tint: root.fg
-                            onClicked: root.clearHistory()
+                            spacing: 6
+
+                            ActionChip {
+                                label: I18n.tr("Copier tout")
+                                icon: "content_copy"
+                                tint: root.aiTint
+                                onClicked: root.copyChatTranscript()
+                            }
+                            ActionChip {
+                                label: I18n.tr("Effacer")
+                                icon: "delete_sweep"
+                                tint: root.fg
+                                onClicked: root.clearHistory()
+                            }
                         }
                     }
 
@@ -3852,9 +4208,9 @@ Item {
                                             }
                                         }
 
-                                        // Bouton Copier sur les réponses Katana AI
+                                        // Bouton Copier (réponse IA) ou Réutiliser (message utilisateur)
                                         Rectangle {
-                                            visible: !msgWrap.isUser && msgHover.hovered
+                                            visible: msgHover.hovered
                                             anchors.top: parent.top
                                             anchors.right: parent.right
                                             anchors.margins: 6
@@ -3865,7 +4221,7 @@ Item {
 
                                             MaterialIcon {
                                                 anchors.centerIn: parent
-                                                text: "content_copy"
+                                                text: msgWrap.isUser ? "replay" : "content_copy"
                                                 color: root.fgDim
                                                 fontStyle: Tokens.font.icon.size(12).build()
                                             }
@@ -3876,7 +4232,15 @@ Item {
                                                 anchors.fill: parent
                                                 hoverEnabled: true
                                                 cursorShape: Qt.PointingHandCursor
-                                                onClicked: root.copyText(msgWrap.modelData.text, I18n.tr("Réponse copiée ✓"))
+                                                onClicked: {
+                                                    if (msgWrap.isUser) {
+                                                        root.dockTarget = "ai";
+                                                        dockInput.text = msgWrap.modelData.text;
+                                                        dockInput.forceActiveFocus();
+                                                    } else {
+                                                        root.copyText(msgWrap.modelData.text, I18n.tr("Réponse copiée ✓"));
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -4421,6 +4785,96 @@ Item {
                             }
                         }
 
+                        // Worktrees isolés actifs pour ce dépôt (Diff · Terminal · Supprimer)
+                        Rectangle {
+                            visible: root.worktrees.length > 0
+                            width: parent.width
+                            height: wtListCol.implicitHeight + 14
+                            radius: 12
+                            color: Qt.alpha(root.green, 0.08)
+                            border.width: 0.5
+                            border.color: Qt.alpha(root.green, 0.3)
+
+                            Column {
+                                id: wtListCol
+
+                                anchors.fill: parent
+                                anchors.margins: 7
+                                spacing: 4
+
+                                StyledText {
+                                    text: I18n.tr("WORKTREES ESCOUADE ACTIFS (%1)").arg(root.worktrees.length)
+                                    color: root.green
+                                    font.pointSize: 6.7
+                                    font.weight: Font.Black
+                                    font.letterSpacing: 0.6
+                                }
+
+                                Repeater {
+                                    model: root.worktrees.slice(0, 3)
+
+                                    Item {
+                                        id: wtRowItem
+
+                                        required property var modelData
+                                        width: wtListCol.width
+                                        height: 24
+
+                                        Row {
+                                            anchors.left: parent.left
+                                            anchors.right: wtBtns.left
+                                            anchors.rightMargin: 6
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            spacing: 6
+
+                                            StyledText {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                width: Math.min(implicitWidth, parent.width - 70)
+                                                elide: Text.ElideRight
+                                                text: `⎇ ${wtRowItem.modelData.branch}`
+                                                color: root.fg
+                                                font.family: "monospace"
+                                                font.pointSize: 7.2
+                                                font.weight: Font.Bold
+                                            }
+                                            StyledText {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                text: wtRowItem.modelData.dirty > 0
+                                                    ? I18n.tr("%1 modif.").arg(wtRowItem.modelData.dirty)
+                                                    : I18n.tr("propre")
+                                                color: wtRowItem.modelData.dirty > 0 ? root.orange : root.fgDim
+                                                font.pointSize: 6.9
+                                            }
+                                        }
+
+                                        Row {
+                                            id: wtBtns
+
+                                            anchors.right: parent.right
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            spacing: 4
+
+                                            ActionChip {
+                                                label: I18n.tr("Diff")
+                                                tint: root.aiTint
+                                                onClicked: root.openWorktreeDiff(wtRowItem.modelData.path)
+                                            }
+                                            ActionChip {
+                                                label: I18n.tr("Terminal")
+                                                tint: root.fg
+                                                onClicked: Agents.openTerminal(wtRowItem.modelData.path)
+                                            }
+                                            ActionChip {
+                                                label: I18n.tr("Suppr.")
+                                                tint: root.red
+                                                onClicked: root.removeWorktree(wtRowItem.modelData.path)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         Rectangle {
                             anchors.right: parent.right
                             width: deployRow.implicitWidth + 28
@@ -4569,6 +5023,57 @@ Item {
                             cursorShape: Qt.PointingHandCursor
                             onClicked: {
                                 root.dockTarget = "ai";
+                                dockInput.forceActiveFocus();
+                            }
+                        }
+                    }
+
+                    // Pilule Broadcast : diffuser un ordre à tous les agents CLI actifs
+                    Rectangle {
+                        visible: root.liveCliCount >= 2 || root.dockTarget === "all"
+                        readonly property bool sel: root.dockTarget === "all"
+
+                        width: sel ? dAllRow.implicitWidth + 14 : 30
+                        height: 30
+                        radius: 15
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: sel ? Qt.alpha(root.orange, 0.28) : Qt.alpha(root.orange, dAllArea.containsMouse ? 0.18 : 0.1)
+                        border.width: sel ? 0.9 : 0.5
+                        border.color: Qt.alpha(root.orange, sel ? 0.72 : 0.35)
+
+                        Behavior on width { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+
+                        Row {
+                            id: dAllRow
+
+                            anchors.centerIn: parent
+                            spacing: 4
+
+                            MaterialIcon {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "campaign"
+                                color: root.orange
+                                fontStyle: Tokens.font.icon.size(13).build()
+                                fill: 1
+                            }
+                            StyledText {
+                                visible: root.dockTarget === "all"
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: I18n.tr("Tous (%1)").arg(root.liveCliCount)
+                                color: root.fg
+                                font.pointSize: 7.4
+                                font.weight: Font.Black
+                            }
+                        }
+
+                        MouseArea {
+                            id: dAllArea
+
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                root.dockTarget = "all";
                                 dockInput.forceActiveFocus();
                             }
                         }
@@ -4751,16 +5256,18 @@ Item {
                             elide: Text.ElideRight
                             text: root.dockTarget === "ai"
                                 ? I18n.tr("Parle à Katana AI : « Dis à AGY CLI de… », « Lance Codex sur… »")
-                                : root.dockExistingAgent
-                                    ? I18n.tr("Écrire en direct à %1 (%2)…").arg(Agents.kindName(root.dockTarget)).arg(root.dockExistingAgent.project)
-                                    : I18n.tr("Lancer %1 sur %2 avec une mission…").arg(Agents.kindName(root.dockTarget)).arg(root.currentProject?.name ?? "~")
+                                : root.dockTarget === "all"
+                                    ? I18n.tr("Diffuser un ordre à tous les %1 agent(s) CLI actifs…").arg(root.liveCliCount)
+                                    : root.dockExistingAgent
+                                        ? I18n.tr("Écrire en direct à %1 (%2)…").arg(Agents.kindName(root.dockTarget)).arg(root.dockExistingAgent.project)
+                                        : I18n.tr("Lancer %1 sur %2 avec une mission…").arg(Agents.kindName(root.dockTarget)).arg(root.currentProject?.name ?? "~")
                             color: root.fgMute
                             font.pointSize: 8.3
                         }
                     }
                 }
 
-                // Bouton Envoyer / Lancer
+                // Bouton Envoyer / Lancer / Diffuser
                 Rectangle {
                     id: goBtn
 
@@ -4783,20 +5290,22 @@ Item {
 
                         MaterialIcon {
                             anchors.verticalCenter: parent.verticalCenter
-                            text: root.dockTarget === "ai" ? "auto_awesome" : (root.dockExistingAgent ? "send" : "play_arrow")
+                            text: root.dockTarget === "ai" ? "auto_awesome" : (root.dockTarget === "all" ? "campaign" : (root.dockExistingAgent ? "send" : "play_arrow"))
                             color: root.dockTint
                             fontStyle: Tokens.font.icon.size(15).build()
                             fill: 1
                         }
                         StyledText {
                             anchors.verticalCenter: parent.verticalCenter
-                            text: root.aiThinking
+                            text: root.aiThinking || root.broadcasting
                                 ? I18n.tr("…")
                                 : root.dockTarget === "ai"
                                     ? I18n.tr("Ordonner")
-                                    : root.dockExistingAgent
-                                        ? I18n.tr("Envoyer")
-                                        : I18n.tr("Lancer")
+                                    : root.dockTarget === "all"
+                                        ? I18n.tr("Diffuser")
+                                        : root.dockExistingAgent
+                                            ? I18n.tr("Envoyer")
+                                            : I18n.tr("Lancer")
                             color: root.fg
                             font.pointSize: 8.1
                             font.weight: Font.Bold
@@ -5398,6 +5907,154 @@ Item {
                                 text: I18n.tr("Aucun projet correspondant.")
                                 color: root.fgDim
                                 font.pointSize: 8.2
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // ── 7. OVERLAY AIDE RACCOURCIS CLAVIER (F1 / Ctrl+/) ──
+        Rectangle {
+            id: helpOverlay
+
+            visible: root.helpOpen
+            anchors.fill: parent
+            z: 70
+            radius: 30
+            color: Qt.rgba(0, 0, 0, Colours.light ? 0.28 : 0.56)
+
+            MouseArea {
+                anchors.fill: parent
+                onClicked: root.helpOpen = false
+            }
+
+            Rectangle {
+                anchors.centerIn: parent
+                width: Math.min(620, parent.width - 60)
+                height: helpCol.implicitHeight + 36
+                radius: 22
+                color: Qt.alpha(Colours.palette.m3surface, Colours.light ? 0.97 : 0.95)
+                border.width: 0.9
+                border.color: Qt.alpha(root.aiTint, 0.52)
+
+                MouseArea {
+                    anchors.fill: parent
+                }
+
+                Column {
+                    id: helpCol
+
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: 18
+                    spacing: 12
+
+                    Item {
+                        width: parent.width
+                        height: 28
+
+                        Row {
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 8
+
+                            MaterialIcon {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "keyboard"
+                                color: root.aiTint
+                                fontStyle: Tokens.font.icon.size(17).build()
+                            }
+                            StyledText {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: I18n.tr("RACCOURCIS CLAVIER · AGENT OS STUDIO")
+                                color: root.fg
+                                font.pointSize: 9.0
+                                font.weight: Font.Black
+                                font.letterSpacing: 0.65
+                            }
+                        }
+
+                        Rectangle {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 26
+                            height: 26
+                            radius: 13
+                            color: Qt.alpha(root.fg, hCloseArea.containsMouse ? 0.16 : 0.08)
+
+                            MaterialIcon {
+                                anchors.centerIn: parent
+                                text: "close"
+                                color: root.fg
+                                fontStyle: Tokens.font.icon.size(14).build()
+                            }
+
+                            MouseArea {
+                                id: hCloseArea
+
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.helpOpen = false
+                            }
+                        }
+                    }
+
+                    Grid {
+                        width: parent.width
+                        columns: 2
+                        columnSpacing: 14
+                        rowSpacing: 8
+
+                        Repeater {
+                            model: [
+                                { k: "Ctrl + 1..4", d: I18n.tr("Changer d'onglet (Canvas / Cockpit / Katana / Escouade)") },
+                                { k: "Ctrl + P", d: I18n.tr("Palette rapide de recherche de projet") },
+                                { k: "Alt + 1..7", d: I18n.tr("Choisir Katana AI ou un moteur dans le Dock") },
+                                { k: "Alt + ↑ / ↓", d: I18n.tr("Naviguer d'un agent à l'autre dans le Cockpit") },
+                                { k: "Alt + A / D", d: I18n.tr("Autoriser / Refuser la permission active") },
+                                { k: "Ctrl + Espace", d: I18n.tr("Dictée vocale dans le champ actif") },
+                                { k: "↑ / ↓ (Dock)", d: I18n.tr("Historique des commandes envoyées") },
+                                { k: "Ctrl + Entrée", d: I18n.tr("Déployer l'escouade immédiatement") },
+                                { k: "Molette / Glisser", d: I18n.tr("Zoomer et déplacer le Canvas Spatial") },
+                                { k: "F1 / Échap", d: I18n.tr("Afficher l'aide / Fermer le panneau") }
+                            ]
+
+                            Row {
+                                required property var modelData
+                                width: Math.floor((helpCol.width - 14) / 2)
+                                spacing: 8
+
+                                Rectangle {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: Math.max(82, hkTxt.implicitWidth + 12)
+                                    height: 22
+                                    radius: 6
+                                    color: Qt.alpha(root.aiTint, 0.16)
+                                    border.width: 0.5
+                                    border.color: Qt.alpha(root.aiTint, 0.42)
+
+                                    StyledText {
+                                        id: hkTxt
+
+                                        anchors.centerIn: parent
+                                        text: modelData.k
+                                        color: root.fg
+                                        font.family: "monospace"
+                                        font.pointSize: 7.0
+                                        font.weight: Font.Bold
+                                    }
+                                }
+
+                                StyledText {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: parent.width - 96
+                                    wrapMode: Text.Wrap
+                                    text: modelData.d
+                                    color: root.fgDim
+                                    font.pointSize: 7.4
+                                }
                             }
                         }
                     }

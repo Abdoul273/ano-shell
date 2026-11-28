@@ -301,3 +301,54 @@ def test_commander_stream_emits_done_event_and_badge_meta(capsys):
     assert len(out) == 1
     ev = json.loads(out[0])
     assert ev["event"] == "done" and ev["ok"] is False
+
+
+def test_worktrees_list_remove_and_guard(tmp_path, monkeypatch):
+    import subprocess
+
+    mod = _load_agents()
+    repo = tmp_path / "repo_wt"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+    (repo / "a.txt").write_text("1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "a.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True)
+
+    monkeypatch.setattr(mod, "HOME", tmp_path)
+    created = mod.create_agent_worktree(str(repo), "claude", suffix="t1")
+    assert created["ok"] is True
+
+    listed = mod.list_worktrees(str(repo))
+    assert len(listed) == 1 and listed[0]["branch"] == created["branch"]
+
+    # Garde-fou : impossible de supprimer hors du cache ~/.cache/ano-shell/worktrees
+    refused = mod.remove_worktree(str(repo), str(repo))
+    assert refused["ok"] is False
+
+    removed = mod.remove_worktree(str(repo), created["cwd"])
+    assert removed["ok"] is True
+    assert mod.list_worktrees(str(repo)) == []
+
+
+def test_broadcast_and_stop_all_working(monkeypatch):
+    mod = _load_agents()
+    fake_agents = [
+        {"id": "agy:1", "kind": "agy", "project": "p", "cwd": "/tmp/p", "alive": True, "surface": "cli", "pid": 99901, "status": "working", "canStop": True},
+        {"id": "claude:2", "kind": "claude", "project": "p", "cwd": "/tmp/p", "alive": True, "surface": "cli", "pid": 99902, "status": "idle", "canStop": True},
+        {"id": "ag:3", "kind": "antigravity", "project": "p", "cwd": "/tmp/p", "alive": True, "surface": "gui", "pid": 99903, "status": "working", "canStop": False},
+    ]
+    monkeypatch.setattr(mod, "snapshot", lambda _s: {"agents": fake_agents, "perms": []})
+
+    sent_log = []
+    monkeypatch.setattr(mod, "send_to_agent", lambda aid, msg: (sent_log.append((aid, msg)) or {"ok": True, "detail": "ok"}))
+    br = mod.broadcast_to_agents("/compact")
+    assert br["ok"] is True and br["sent"] == 2 and br["total"] == 2
+    assert [x[0] for x in sent_log] == ["agy:1", "claude:2"]
+
+    killed = []
+    monkeypatch.setattr(mod.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    st = mod.stop_all_working()
+    assert st["ok"] is True and st["stopped"] == 1
+    assert killed[0][0] == 99901

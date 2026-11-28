@@ -4474,6 +4474,124 @@ def swarm_dispatch(cwd, plan, isolate_worktree=False):
     }
 
 
+def list_worktrees(cwd):
+    """Liste les git worktrees secondaires gérés par Agent OS pour ce dépôt (branche, fichiers modifiés)."""
+    if not cwd or not os.path.isdir(cwd):
+        return []
+    wt_root = os.path.realpath(str(HOME / ".cache/ano-shell/worktrees"))
+    try:
+        res = subprocess.run(
+            ["git", "-C", cwd, "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, timeout=2.0, check=False,
+        )
+        if res.returncode != 0:
+            return []
+        blocks = []
+        cur = {}
+        for ln in res.stdout.splitlines():
+            if not ln.strip():
+                if cur.get("path"):
+                    blocks.append(cur)
+                cur = {}
+                continue
+            if ln.startswith("worktree "):
+                cur["path"] = ln[9:].strip()
+            elif ln.startswith("branch "):
+                cur["branch"] = ln[7:].strip().removeprefix("refs/heads/")
+        if cur.get("path"):
+            blocks.append(cur)
+
+        items = []
+        for b in blocks:
+            p = b.get("path") or ""
+            real_p = os.path.realpath(p)
+            if not (real_p.startswith(wt_root + os.sep) and os.path.isdir(real_p)):
+                continue
+            branch = b.get("branch") or os.path.basename(real_p)
+            dirty = len(git_status_entries(real_p))
+            items.append({
+                "path": real_p,
+                "name": os.path.basename(real_p),
+                "branch": branch,
+                "dirty": dirty,
+            })
+        return items[:12]
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+
+
+def remove_worktree(cwd, wt_path):
+    """Supprime proprement un worktree géré sous ~/.cache/ano-shell/worktrees et sa branche swarm/*."""
+    if not cwd or not os.path.isdir(cwd) or not wt_path:
+        return {"ok": False, "detail": "Chemin worktree invalide."}
+    wt_root = os.path.realpath(str(HOME / ".cache/ano-shell/worktrees"))
+    real_wt = os.path.realpath(str(wt_path))
+    if not real_wt.startswith(wt_root + os.sep):
+        return {"ok": False, "detail": "Suppression refusée hors du cache worktrees Agent OS."}
+
+    branch = git_branch(real_wt) if os.path.isdir(real_wt) else ""
+    try:
+        r = subprocess.run(
+            ["git", "-C", cwd, "worktree", "remove", "--force", real_wt],
+            capture_output=True, text=True, timeout=6.0, check=False,
+        )
+        if r.returncode != 0:
+            return {"ok": False, "detail": (r.stderr or r.stdout or "Échec suppression worktree").strip()[:140]}
+        if branch.startswith("swarm/"):
+            subprocess.run(
+                ["git", "-C", cwd, "branch", "-D", branch],
+                capture_output=True, text=True, timeout=3.0, check=False,
+            )
+        return {"ok": True, "detail": f"Worktree supprimé ({branch or os.path.basename(real_wt)})"}
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "detail": str(exc)}
+
+
+def broadcast_to_agents(message, cwd=""):
+    """Envoie un ordre identique à tous les agents CLI vivants (optionnellement filtrés sur un projet)."""
+    msg = (message or "").strip()
+    if not msg:
+        return {"ok": False, "sent": 0, "total": 0, "detail": "Message vide."}
+    snap = snapshot({})
+    norm_cwd = str(cwd or "").rstrip("/")
+    targets = [
+        a for a in snap["agents"]
+        if a.get("alive") and a.get("surface") == "cli" and a.get("pid")
+        and (not norm_cwd or str(a.get("cwd") or "").rstrip("/") == norm_cwd)
+    ]
+    if not targets:
+        return {"ok": False, "sent": 0, "total": 0, "detail": "Aucun agent CLI actif à contacter."}
+    sent = 0
+    results = []
+    for ag in targets:
+        r = send_to_agent(ag["id"], msg)
+        ok = bool(r.get("ok"))
+        if ok:
+            sent += 1
+        results.append({"id": ag["id"], "kind": ag["kind"], "project": ag["project"], "ok": ok, "detail": r.get("detail", "")})
+    return {
+        "ok": sent > 0,
+        "sent": sent,
+        "total": len(targets),
+        "detail": f"Diffusé à {sent}/{len(targets)} agent(s) CLI",
+        "results": results,
+    }
+
+
+def stop_all_working():
+    """Envoie SIGINT à tous les agents CLI actuellement en train de travailler."""
+    snap = snapshot({})
+    targets = [a for a in snap["agents"] if a.get("status") == "working" and a.get("canStop") and a.get("pid")]
+    stopped = 0
+    for ag in targets:
+        try:
+            os.kill(int(ag["pid"]), signal.SIGINT)
+            stopped += 1
+        except (OSError, ValueError, TypeError):
+            pass
+    return {"ok": stopped > 0, "stopped": stopped, "detail": f"{stopped} agent(s) interrompu(s)"}
+
+
 def launch_agent(kind):
     dispatch_agent(kind, "", "")
 
@@ -5093,6 +5211,19 @@ if __name__ == "__main__":
         except ValueError:
             plan_list = []
         print(json.dumps(swarm_dispatch(cwd_s, plan_list, isolate_worktree=iso), ensure_ascii=False))
+    elif cmd == "worktrees" and len(sys.argv) >= 3:
+        print(json.dumps(list_worktrees(sys.argv[2]), ensure_ascii=False))
+    elif cmd == "worktree-remove" and len(sys.argv) >= 4:
+        print(json.dumps(remove_worktree(sys.argv[2], sys.argv[3]), ensure_ascii=False))
+    elif cmd == "broadcast" and len(sys.argv) >= 3:
+        cwd_b = ""
+        args_b = sys.argv[2:]
+        if len(args_b) >= 2 and args_b[0] == "--cwd":
+            cwd_b = args_b[1]
+            args_b = args_b[2:]
+        print(json.dumps(broadcast_to_agents(" ".join(args_b), cwd=cwd_b), ensure_ascii=False))
+    elif cmd == "stop-all":
+        print(json.dumps(stop_all_working(), ensure_ascii=False))
     elif cmd == "history":
         print(json.dumps(load_chat_history(), ensure_ascii=False))
     elif cmd == "history-clear":
