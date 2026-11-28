@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import time
 from argparse import Namespace
 
 from ano_shell.i18n import tr
@@ -23,6 +24,19 @@ def is_locked() -> bool:
         return False
 
 
+def _shell_running() -> bool:
+    try:
+        res = subprocess.run(
+            ["pgrep", "-f", f"qs -c {APP_NAME}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return res.returncode == 0
+    except OSError:
+        return False
+
+
 def qs_call(*args: str) -> str:
     return subprocess.check_output(["qs", "-c", APP_NAME, *args], text=True)
 
@@ -37,6 +51,26 @@ def run_shell(args: Namespace) -> int:
         for line in qs_call(*log_args).splitlines():
             if f"Cannot open: file://{app_cache_dir}/imagecache/" not in line:
                 print(line)
+        return 0
+
+    if getattr(args, "restart", False):
+        if not getattr(args, "force", False) and is_locked():
+            print(
+                tr(
+                    "Refus de redémarrer ano-shell pendant que l'écran est verrouillé (utilisez --force pour outrepasser).",
+                    "Refusing to restart ano-shell while the screen is locked (use --force to override).",
+                ),
+                file=sys.stderr,
+            )
+            return 2
+        subprocess.run(["qs", "-c", APP_NAME, "kill"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and _shell_running():
+            time.sleep(0.15)
+        cmd = ["qs", "-c", APP_NAME, "-n", "-d"]
+        if args.log_rules:
+            cmd.extend(["--log-rules", args.log_rules])
+        subprocess.Popen(cmd, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return 0
 
     if args.kill:

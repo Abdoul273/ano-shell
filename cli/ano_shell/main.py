@@ -117,6 +117,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=tr("Arrêter le shell (bloqué si écran verrouillé)", "Stop the shell (blocked while screen is locked)"),
     )
+    sp_shell.add_argument(
+        "-r",
+        "--restart",
+        action="store_true",
+        help=tr("Redémarrer proprement le shell (bloqué si écran verrouillé)", "Cleanly restart the shell (blocked while screen is locked)"),
+    )
     sp_shell.add_argument("--force", action="store_true", help=tr("Forcer l'arrêt même verrouillé", "Force stop even when locked"))
     sp_shell.add_argument("-s", "--show", action="store_true", help=tr("Afficher les cibles IPC", "Show IPC targets"))
     sp_shell.add_argument("-l", "--log", action="store_true", help=tr("Afficher les logs du shell", "Show shell logs"))
