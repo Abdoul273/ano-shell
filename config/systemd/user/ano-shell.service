@@ -1,0 +1,12 @@
+[Unit]
+Description=Ano Shell (Quickshell)
+PartOf=hyprland-session.target
+
+[Service]
+Type=exec
+ExecStart=/bin/sh -c 'exec "$(command -v ano-shell || echo "%h/.local/bin/ano-shell")" shell'
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=hyprland-session.target

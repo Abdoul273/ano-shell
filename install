@@ -699,6 +699,7 @@ for unit in "$ROOT/config/systemd/user/"*; do
     run install -Dm644 "$unit" "$HOME/.config/systemd/user/$(basename "$unit")"
 done
 run systemctl --user daemon-reload 2>/dev/null || true
+run systemctl --user enable ano-shell.service 2>/dev/null || true
 run systemctl --user enable --now \
     ano-shell-theme.path \
     ano-shell-login-sync.path \
