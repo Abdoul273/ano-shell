@@ -166,3 +166,75 @@ def test_standalone_memory_roundtrip(tmp_path, monkeypatch):
     assert ok is True
     found = mod.ano_memory_search("Neovim")
     assert "Neovim" in found
+
+
+def test_models_catalog_structure_and_efforts(monkeypatch):
+    mod = _load_agents()
+    monkeypatch.setattr(mod, "list_agy_models", lambda force_refresh=False: list(mod._AGY_FALLBACK_MODELS))
+
+    cat = mod.list_models_catalog("agy")
+    assert cat["kind"] == "agy"
+    assert cat["canApplyLive"] is True
+    assert "high" in cat["efforts"]
+    neon = next(g for g in cat["groups"] if g["base"] == "Gemini 4 Neon")
+    assert "high" in neon["variants"] and "xhigh" in neon["variants"]
+
+    ag_gui = mod.list_models_catalog("antigravity")
+    assert ag_gui["canApplyLive"] is False
+
+    cl = mod.list_models_catalog("claude")
+    assert [g["slug"] for g in cl["groups"]] == ["opus", "sonnet", "haiku"]
+
+
+def test_clean_terminal_screen_strips_ansi_and_caps_lines():
+    mod = _load_agents()
+    raw = "\x1b[32mOK\x1b[0m ligne 1\r\n\x1b]0;titre\x07ligne 2\n\n\n"
+    txt, count = mod._clean_terminal_screen(raw, max_lines=50)
+    assert txt == "OK ligne 1\nligne 2"
+    assert count == 2
+
+
+def test_git_file_diff_and_untracked_and_traversal_guard(tmp_path):
+    import subprocess
+
+    mod = _load_agents()
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Test"], check=True)
+
+    f = tmp_path / "demo.py"
+    f.write_text("a = 1\nb = 2\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "demo.py"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-q", "-m", "init"], check=True)
+
+    # Modification suivie + nouveau fichier non suivi
+    f.write_text("a = 1\nb = 42\nc = 3\n", encoding="utf-8")
+    (tmp_path / "notes.txt").write_text("bonjour\nligne 2\n", encoding="utf-8")
+
+    entries = mod.git_status_entries(str(tmp_path))
+    paths = {e["path"] for e in entries}
+    assert "demo.py" in paths and "notes.txt" in paths
+
+    d_tracked = mod.git_file_diff(str(tmp_path), "demo.py")
+    assert d_tracked["ok"] is True
+    assert d_tracked["added"] >= 2 and d_tracked["removed"] >= 1
+    assert any(ln["kind"] == "add" and "b = 42" in ln["text"] for ln in d_tracked["lines"])
+
+    d_untracked = mod.git_file_diff(str(tmp_path), "notes.txt")
+    assert d_untracked["ok"] is True and d_untracked["untracked"] is True
+    assert d_untracked["added"] == 2
+
+    d_escape = mod.git_file_diff(str(tmp_path), "../etc/passwd")
+    assert d_escape["ok"] is False
+
+
+def test_agent_detail_targeted_skips_full_snapshot(tmp_path, monkeypatch):
+    mod = _load_agents()
+
+    def _boom(_state):
+        raise AssertionError("snapshot() ne doit pas être appelé en mode ciblé")
+
+    monkeypatch.setattr(mod, "snapshot", _boom)
+    det = mod.agent_detail("agy:inexistant", kind="agy", cwd=str(tmp_path), pid=0)
+    assert det["id"] == "agy:inexistant"
+    assert isinstance(det["events"], list) and isinstance(det["gitFiles"], list)

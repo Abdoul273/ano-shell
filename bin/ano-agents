@@ -2003,6 +2003,133 @@ def list_opencode_models():
     return []
 
 
+def _read_codex_current_model():
+    cfg = HOME / ".codex/config.toml"
+    if not cfg.is_file():
+        return ""
+    try:
+        for ln in cfg.read_text(encoding="utf-8").splitlines():
+            m = re.match(r'^\s*model\s*=\s*"([^"]+)"', ln)
+            if m:
+                return m.group(1).strip()
+    except OSError:
+        pass
+    return ""
+
+
+def list_models_catalog(kind="agy"):
+    """Retourne un catalogue structuré de modèles et d'efforts pour le sélecteur rapide Agent OS."""
+    k = str(kind or "agy").strip().lower()
+
+    if k in ("agy", "antigravity"):
+        raw = list_agy_models()
+        groups = []
+        by_base = {}
+        flat = []
+        for slug, display in raw:
+            m_par = re.search(r"\(([^)]+)\)\s*$", display)
+            eff = _normalize_effort(m_par.group(1)) if m_par else ""
+            base = re.sub(r"\s*\([^)]+\)\s*$", "", display).strip() if eff else display
+            entry = {"slug": slug, "display": display, "base": base, "effort": eff}
+            flat.append(entry)
+            grp = by_base.get(base)
+            if not grp:
+                grp = {"base": base, "slug": slug, "display": display, "efforts": [], "variants": {}}
+                by_base[base] = grp
+                groups.append(grp)
+            if eff and eff not in grp["efforts"]:
+                grp["efforts"].append(eff)
+                grp["variants"][eff] = {"slug": slug, "display": display}
+        eff_order = {"low": 0, "medium": 1, "high": 2, "xhigh": 3, "max": 4}
+        for grp in groups:
+            grp["efforts"].sort(key=lambda e: eff_order.get(e, 9))
+            pref = grp["variants"].get("medium") or grp["variants"].get("high")
+            if pref:
+                grp["slug"] = pref["slug"]
+                grp["display"] = pref["display"]
+        return {
+            "kind": k,
+            "canApplyLive": k == "agy",
+            "efforts": ["low", "medium", "high", "xhigh"],
+            "groups": groups,
+            "models": flat,
+        }
+
+    if k == "claude":
+        groups = [
+            {"base": "Claude Opus", "slug": "opus", "display": "Claude Opus", "efforts": ["low", "medium", "high", "max"], "variants": {}},
+            {"base": "Claude Sonnet", "slug": "sonnet", "display": "Claude Sonnet", "efforts": ["low", "medium", "high", "max"], "variants": {}},
+            {"base": "Claude Haiku", "slug": "haiku", "display": "Claude Haiku", "efforts": ["low", "medium", "high"], "variants": {}},
+        ]
+        return {
+            "kind": k,
+            "canApplyLive": True,
+            "efforts": ["low", "medium", "high", "max"],
+            "groups": groups,
+            "models": [{"slug": g["slug"], "display": g["display"], "base": g["base"], "effort": ""} for g in groups],
+        }
+
+    if k == "codex":
+        cur = _read_codex_current_model()
+        defaults = [
+            ("gpt-5.6-terra", "GPT-5.6 Terra"),
+            ("gpt-5.4", "GPT-5.4"),
+            ("gpt-5.3-codex", "GPT-5.3 Codex"),
+            ("o3", "o3"),
+        ]
+        seen = set()
+        groups = []
+        if cur:
+            seen.add(cur)
+            groups.append({"base": cur, "slug": cur, "display": cur, "efforts": ["low", "medium", "high", "xhigh"], "variants": {}})
+        for slug, disp in defaults:
+            if slug not in seen:
+                seen.add(slug)
+                groups.append({"base": disp, "slug": slug, "display": disp, "efforts": ["low", "medium", "high", "xhigh"], "variants": {}})
+        return {
+            "kind": k,
+            "canApplyLive": True,
+            "efforts": ["low", "medium", "high", "xhigh"],
+            "groups": groups,
+            "models": [{"slug": g["slug"], "display": g["display"], "base": g["base"], "effort": ""} for g in groups],
+        }
+
+    if k == "copilot":
+        defaults = [
+            ("auto", "Auto"),
+            ("claude-sonnet-4.5", "Claude Sonnet 4.5"),
+            ("claude-opus-4.5", "Claude Opus 4.5"),
+            ("gpt-5", "GPT-5"),
+        ]
+        groups = [
+            {"base": disp, "slug": slug, "display": disp, "efforts": ["low", "medium", "high"], "variants": {}}
+            for slug, disp in defaults
+        ]
+        return {
+            "kind": k,
+            "canApplyLive": True,
+            "efforts": ["low", "medium", "high"],
+            "groups": groups,
+            "models": [{"slug": g["slug"], "display": g["display"], "base": g["base"], "effort": ""} for g in groups],
+        }
+
+    if k == "opencode":
+        items = list_opencode_models()[:30]
+        groups = [
+            {"base": item, "slug": item, "display": item, "efforts": [], "variants": {}}
+            for item in items
+        ]
+        return {
+            "kind": k,
+            "canApplyLive": True,
+            "efforts": [],
+            "groups": groups,
+            "models": [{"slug": g["slug"], "display": g["display"], "base": g["base"], "effort": ""} for g in groups],
+        }
+
+    return {"kind": k, "canApplyLive": False, "efforts": [], "groups": [], "models": []}
+
+
 def _extract_model_and_effort(model_query, effort_query):
     """Sépare proprement le nom de modèle et l'effort même si tout a été mis dans `model_query`."""
     eff = _normalize_effort(effort_query)
@@ -4241,26 +4368,204 @@ def list_projects():
     return res[:18]
 
 
-def git_short_status(cwd):
+def git_status_entries(cwd):
+    """Retourne les fichiers modifiés Git structurés [{code, path, label}] (max 16)."""
     if not cwd or not os.path.isdir(cwd):
         return []
     try:
         res = subprocess.run(
-            ["git", "-C", cwd, "status", "--short", "--untracked-files=normal"],
+            ["git", "-C", cwd, "status", "--porcelain=v1", "--untracked-files=normal"],
             capture_output=True, text=True, timeout=1.2, check=False,
         )
         if res.returncode != 0:
             return []
-        lines = [ln for ln in res.stdout.splitlines() if ln.strip()][:12]
-        return lines
+        entries = []
+        for ln in res.stdout.splitlines():
+            if len(ln) < 4:
+                continue
+            code = ln[:2].strip() or "M"
+            raw_path = ln[3:].strip()
+            if " -> " in raw_path:
+                raw_path = raw_path.split(" -> ", 1)[1].strip()
+            if len(raw_path) >= 2 and raw_path[0] == '"' and raw_path[-1] == '"':
+                raw_path = raw_path[1:-1]
+            entries.append({"code": code, "path": raw_path, "label": ln.rstrip()})
+            if len(entries) >= 16:
+                break
+        return entries
     except (OSError, subprocess.TimeoutExpired):
         return []
 
 
-def agent_detail(agent_id):
+def git_short_status(cwd):
+    return [e["label"] for e in git_status_entries(cwd)[:12]]
+
+
+def _parse_diff_lines(raw_text, max_lines=240):
+    lines = []
+    added = 0
+    removed = 0
+    all_lines = (raw_text or "").splitlines()
+    truncated = len(all_lines) > max_lines
+    for ln in all_lines[:max_lines]:
+        if ln.startswith("@@"):
+            kind = "hunk"
+        elif ln.startswith(("diff --git ", "index ", "--- ", "+++ ", "new file ", "deleted file ", "Binary files ")):
+            kind = "meta"
+        elif ln.startswith("+"):
+            kind = "add"
+            added += 1
+        elif ln.startswith("-"):
+            kind = "del"
+            removed += 1
+        else:
+            kind = "ctx"
+        lines.append({"kind": kind, "text": ln})
+    return lines, added, removed, truncated
+
+
+def git_file_diff(cwd, filepath=""):
+    """Retourne le diff Git colorisable pour un fichier précis (ou tout le dépôt si filepath est vide)."""
+    if not cwd or not os.path.isdir(cwd):
+        return {"ok": False, "detail": "Dossier projet introuvable.", "lines": [], "raw": ""}
+
+    fp = str(filepath or "").strip()
+    if fp:
+        if fp.startswith("-"):
+            return {"ok": False, "detail": "Chemin de fichier invalide.", "lines": [], "raw": ""}
+        base_real = os.path.realpath(cwd)
+        cand_real = os.path.realpath(os.path.join(cwd, fp))
+        if not (cand_real == base_real or cand_real.startswith(base_real + os.sep)):
+            return {"ok": False, "detail": "Chemin hors du dépôt.", "lines": [], "raw": ""}
+
+    try:
+        # Cas fichier non suivi (untracked) : afficher un aperçu en lignes ajoutées
+        if fp:
+            ut = subprocess.run(
+                ["git", "-C", cwd, "ls-files", "--others", "--exclude-standard", "--", fp],
+                capture_output=True, text=True, timeout=1.5, check=False,
+            )
+            if ut.returncode == 0 and ut.stdout.strip():
+                full_p = Path(cwd) / fp
+                if full_p.is_file():
+                    raw_bytes = full_p.read_bytes()[:48 * 1024]
+                    if b"\x00" in raw_bytes:
+                        return {
+                            "ok": True, "cwd": cwd, "file": fp, "untracked": True, "binary": True,
+                            "added": 0, "removed": 0, "truncated": False, "stat": "Fichier binaire (nouveau)",
+                            "lines": [{"kind": "meta", "text": f"Nouveau fichier binaire : {fp}"}],
+                            "raw": "",
+                        }
+                    txt = raw_bytes.decode("utf-8", errors="replace")
+                    src_lines = txt.splitlines()
+                    truncated = len(src_lines) > 180 or full_p.stat().st_size > 48 * 1024
+                    shown = src_lines[:180]
+                    lines = [{"kind": "meta", "text": f"+++ b/{fp} (nouveau fichier)"}]
+                    lines.extend({"kind": "add", "text": f"+{ln}"} for ln in shown)
+                    return {
+                        "ok": True, "cwd": cwd, "file": fp, "untracked": True, "binary": False,
+                        "added": len(shown), "removed": 0, "truncated": truncated,
+                        "stat": f"+{len(src_lines)} lignes (non suivi)",
+                        "lines": lines, "raw": txt[:12000],
+                    }
+
+        # Diff suivi par rapport à HEAD (ou repli unstaged+staged si dépôt sans commit initial)
+        cmd = ["git", "-C", cwd, "diff", "--no-color", "HEAD"]
+        if fp:
+            cmd.extend(["--", fp])
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=2.5, check=False)
+        raw = res.stdout if res.returncode == 0 else ""
+        if res.returncode != 0:
+            r1 = subprocess.run(["git", "-C", cwd, "diff", "--no-color", *(["--", fp] if fp else [])], capture_output=True, text=True, timeout=2.0, check=False)
+            r2 = subprocess.run(["git", "-C", cwd, "diff", "--no-color", "--cached", *(["--", fp] if fp else [])], capture_output=True, text=True, timeout=2.0, check=False)
+            raw = ((r1.stdout or "") + "\n" + (r2.stdout or "")).strip()
+
+        stat_cmd = ["git", "-C", cwd, "diff", "--stat", "HEAD"]
+        if fp:
+            stat_cmd.extend(["--", fp])
+        st = subprocess.run(stat_cmd, capture_output=True, text=True, timeout=1.5, check=False)
+        stat_txt = (st.stdout or "").strip() if st.returncode == 0 else ""
+
+        lines, added, removed, truncated = _parse_diff_lines(raw, max_lines=240)
+        return {
+            "ok": True,
+            "cwd": cwd,
+            "file": fp,
+            "untracked": False,
+            "binary": False,
+            "added": added,
+            "removed": removed,
+            "truncated": truncated,
+            "stat": stat_txt,
+            "lines": lines,
+            "raw": raw[:14000],
+        }
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "detail": str(exc), "lines": [], "raw": ""}
+
+
+def _clean_terminal_screen(raw_text, max_lines=70):
+    """Nettoie les séquences ANSI résiduelles et les lignes vides finales d'un écran Kitty."""
+    txt = re.sub(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)", "", raw_text or "")
+    txt = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", txt)
+    txt = txt.replace("\r", "")
+    lines = [ln.rstrip() for ln in txt.splitlines()]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if len(lines) > max_lines:
+        lines = lines[-max_lines:]
+    return "\n".join(lines), len(lines)
+
+
+def agent_screen(agent_id, pid=0):
+    """Capture l'écran Kitty en direct d'un agent CLI pour l'onglet Terminal Live du Cockpit."""
+    target_pid = int(pid or 0)
+    target_kind = ""
+    if target_pid <= 0 and agent_id:
+        snap = snapshot({})
+        ag = next((a for a in snap["agents"] if a["id"] == agent_id), None)
+        if ag:
+            target_pid = int(ag.get("pid") or 0)
+            target_kind = str(ag.get("kind") or "")
+
+    if target_pid <= 0:
+        detail = "Fenêtre graphique Electron (pas de terminal Kitty)." if target_kind == "antigravity" else "Aucun processus terminal actif pour cette session."
+        return {"ok": False, "text": "", "lineCount": 0, "kittyWin": None, "detail": detail}
+
+    procs, _ = scan()
+    kitty_pid = find_kitty_ancestor(target_pid, procs)
+    if not kitty_pid:
+        return {"ok": False, "text": "", "lineCount": 0, "kittyWin": None, "detail": "Cet agent ne tourne pas dans Kitty (remote control indisponible)."}
+
+    _, wid, raw = read_kitty_screen(kitty_pid, target_pid, procs)
+    if wid is None:
+        return {"ok": False, "text": "", "lineCount": 0, "kittyWin": None, "detail": "Socket Kitty remote inaccessible (allow_remote_control)."}
+
+    cleaned, line_count = _clean_terminal_screen(raw, max_lines=70)
+    return {
+        "ok": True,
+        "text": cleaned,
+        "lineCount": line_count,
+        "kittyWin": wid,
+        "detail": f"Kitty #{wid} · {line_count} lignes",
+    }
+
+
+def _make_event(kind, text, clip_n=160):
+    full = str(text or "").strip()
+    if len(full) > 1500:
+        full = full[:1499] + "…"
+    return {"kind": kind, "text": clip(full, clip_n), "fullText": full}
+
+
+def agent_detail(agent_id, kind="", cwd="", pid=0):
     """Retourne la timeline détaillée, les étapes et le statut git d'un agent pour l'inspecteur Agent OS."""
-    snap = snapshot({})
-    target = next((a for a in snap["agents"] if a["id"] == agent_id), None)
+    target = None
+    if kind:
+        target = {"id": agent_id, "kind": str(kind).lower(), "cwd": str(cwd or ""), "pid": int(pid or 0)}
+    else:
+        snap = snapshot({})
+        target = next((a for a in snap["agents"] if a["id"] == agent_id), None)
     events = []
     steps = []
     cwd = target["cwd"] if target else ""
@@ -4280,7 +4585,7 @@ def agent_detail(agent_id):
                             m = re.search(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", txt, re.DOTALL)
                             if m:
                                 txt = m.group(1)
-                            events.append({"kind": "user", "text": clip(txt, 140)})
+                            events.append(_make_event("user", txt, 140))
                         elif ltype == "PLANNER_RESPONSE":
                             for tc in line.get("tool_calls") or []:
                                 if not isinstance(tc, dict):
@@ -4299,11 +4604,11 @@ def agent_detail(agent_id):
                                 elif tn == "update_focus":
                                     fv = str(args.get("focus") or "").strip().strip('"')
                                     if fv:
-                                        events.append({"kind": "focus", "text": clip(fv, 110)})
+                                        events.append(_make_event("focus", fv, 110))
                                 else:
-                                    events.append({"kind": "tool", "text": tool_label(tn, args)})
+                                    events.append(_make_event("tool", tool_label(tn, args), 160))
                             if (line.get("content") or "").strip():
-                                events.append({"kind": "reply", "text": clip(line["content"], 160)})
+                                events.append(_make_event("reply", line["content"], 160))
                     break
     elif target and kind == "codex":
         for f, _ in sorted(codex_files(), key=lambda x: x[1], reverse=True):
@@ -4317,17 +4622,17 @@ def agent_detail(agent_id):
                             args = json.loads(p.get("arguments") or "{}")
                         except ValueError:
                             args = {}
-                        events.append({"kind": "tool", "text": tool_label(p.get("name") or "Outil", args)})
+                        events.append(_make_event("tool", tool_label(p.get("name") or "Outil", args), 160))
                     elif lt == "event_msg" and p.get("type") == "item_completed":
                         item = p.get("item") or {}
                         it = item.get("type")
                         if it == "AgentMessage":
                             txts = [c.get("text") for c in item.get("content") or [] if isinstance(c, dict) and c.get("text")]
                             if txts:
-                                events.append({"kind": "reply", "text": clip(txts[0], 160)})
+                                events.append(_make_event("reply", txts[0], 160))
                         elif it == "FileChange":
                             for fp in (item.get("changes") or {}):
-                                events.append({"kind": "file", "text": f"Modifié · {os.path.basename(fp)}"})
+                                events.append(_make_event("file", f"Modifié · {os.path.basename(fp)}", 140))
                 break
     elif target and kind == "claude":
         try:
@@ -4340,15 +4645,15 @@ def agent_detail(agent_id):
                         msg = line.get("message") or {}
                         content = msg.get("content")
                         if kt == "user" and isinstance(content, str) and not content.startswith("<"):
-                            events.append({"kind": "user", "text": clip(content, 140)})
+                            events.append(_make_event("user", content, 140))
                         elif kt == "assistant" and isinstance(content, list):
                             for b in content:
                                 if not isinstance(b, dict):
                                     continue
                                 if b.get("type") == "tool_use":
-                                    events.append({"kind": "tool", "text": tool_label(b.get("name"), b.get("input"))})
+                                    events.append(_make_event("tool", tool_label(b.get("name"), b.get("input")), 160))
                                 elif b.get("type") == "text" and (b.get("text") or "").strip():
-                                    events.append({"kind": "reply", "text": clip(b["text"], 160)})
+                                    events.append(_make_event("reply", b["text"], 160))
         except (OSError, ValueError):
             pass
     elif target and kind == "copilot":
@@ -4361,7 +4666,7 @@ def agent_detail(agent_id):
                         t = line.get("type")
                         dat = line.get("data") or {}
                         if t == "user.message" and dat.get("content"):
-                            events.append({"kind": "user", "text": clip(dat["content"], 140)})
+                            events.append(_make_event("user", dat["content"], 140))
                         elif t == "tool.execution_start":
                             args = dat.get("arguments")
                             if isinstance(args, str):
@@ -4369,9 +4674,9 @@ def agent_detail(agent_id):
                                     args = json.loads(args)
                                 except ValueError:
                                     args = {"patch": args} if "Begin Patch" in args else {"command": args}
-                            events.append({"kind": "tool", "text": tool_label(dat.get("toolName"), args if isinstance(args, dict) else {})})
+                            events.append(_make_event("tool", tool_label(dat.get("toolName"), args if isinstance(args, dict) else {}), 160))
                         elif t == "assistant.message" and (dat.get("content") or "").strip():
-                            events.append({"kind": "reply", "text": clip(dat["content"], 160)})
+                            events.append(_make_event("reply", dat["content"], 160))
                     break
     elif target and kind == "opencode":
         ocdb = HOME / ".local/share/opencode/opencode.db"
@@ -4389,20 +4694,22 @@ def agent_detail(agent_id):
                             continue
                         if ptype == "tool":
                             st = pd.get("state") or {}
-                            events.append({"kind": "tool", "text": tool_label(pd.get("name"), st.get("input"))})
+                            events.append(_make_event("tool", tool_label(pd.get("name"), st.get("input")), 160))
                         elif ptype == "text" and (pd.get("text") or "").strip():
-                            events.append({"kind": "reply", "text": clip(pd["text"], 160)})
+                            events.append(_make_event("reply", pd["text"], 160))
                         elif ptype == "reasoning" and (pd.get("text") or "").strip():
-                            events.append({"kind": "focus", "text": clip(pd["text"], 110)})
+                            events.append(_make_event("focus", pd["text"], 110))
                 con.close()
             except sqlite3.Error:
                 pass
 
+    git_entries = git_status_entries(cwd)
     return {
         "id": agent_id,
-        "events": events[-14:],
+        "events": events[-18:],
         "steps": steps,
-        "gitStatus": git_short_status(cwd),
+        "gitStatus": [e["label"] for e in git_entries[:12]],
+        "gitFiles": git_entries,
     }
 
 
@@ -4537,8 +4844,16 @@ if __name__ == "__main__":
                 i += 1
         print(json.dumps(set_agent_model(" ".join(m_parts), effort=eff_a, agent_id=aid_a, kind=k_a), ensure_ascii=False))
     elif cmd == "models":
-        k = sys.argv[2].lower() if len(sys.argv) >= 3 else "agy"
-        if k == "opencode":
+        k = "agy"
+        as_catalog = False
+        for tok in sys.argv[2:]:
+            if tok == "--catalog":
+                as_catalog = True
+            else:
+                k = tok.lower()
+        if as_catalog:
+            print(json.dumps(list_models_catalog(k), ensure_ascii=False))
+        elif k == "opencode":
             print(json.dumps(list_opencode_models(), ensure_ascii=False))
         else:
             print(json.dumps([{"slug": s, "display": d} for s, d in list_agy_models()], ensure_ascii=False))
@@ -4558,8 +4873,41 @@ if __name__ == "__main__":
         open_terminal(sys.argv[2] if len(sys.argv) > 2 else "")
     elif cmd == "projects":
         print(json.dumps(list_projects(), ensure_ascii=False))
-    elif cmd == "detail" and len(sys.argv) == 3:
-        print(json.dumps(agent_detail(sys.argv[2]), ensure_ascii=False))
+    elif cmd == "detail" and len(sys.argv) >= 3:
+        # Usage: ano-agents detail <agent_id> [--kind <k>] [--cwd <cwd>] [--pid <pid>]
+        aid_d = sys.argv[2]
+        k_d, cwd_d, pid_d = "", "", 0
+        i = 3
+        while i < len(sys.argv):
+            tok = sys.argv[i]
+            if tok == "--kind" and i + 1 < len(sys.argv):
+                k_d = sys.argv[i + 1]
+                i += 2
+            elif tok == "--cwd" and i + 1 < len(sys.argv):
+                cwd_d = sys.argv[i + 1]
+                i += 2
+            elif tok == "--pid" and i + 1 < len(sys.argv):
+                try:
+                    pid_d = int(sys.argv[i + 1])
+                except ValueError:
+                    pid_d = 0
+                i += 2
+            else:
+                i += 1
+        print(json.dumps(agent_detail(aid_d, kind=k_d, cwd=cwd_d, pid=pid_d), ensure_ascii=False))
+    elif cmd == "screen" and len(sys.argv) >= 3:
+        # Usage: ano-agents screen <agent_id> [--pid <pid>]
+        aid_s = sys.argv[2]
+        pid_s = 0
+        if len(sys.argv) >= 5 and sys.argv[3] == "--pid":
+            try:
+                pid_s = int(sys.argv[4])
+            except ValueError:
+                pid_s = 0
+        print(json.dumps(agent_screen(aid_s, pid=pid_s), ensure_ascii=False))
+    elif cmd == "diff" and len(sys.argv) >= 3:
+        # Usage: ano-agents diff <cwd> [filepath]
+        print(json.dumps(git_file_diff(sys.argv[2], sys.argv[3] if len(sys.argv) >= 4 else ""), ensure_ascii=False))
     elif cmd == "once":
         print(json.dumps(snapshot({}), ensure_ascii=False, indent=2))
     else:

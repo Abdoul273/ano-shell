@@ -63,7 +63,22 @@ Item {
     property int projectIdx: 0
     property string dockTarget: "ai" // "ai" (Commandant IA) ou un moteur ("agy", "claude", "codex", "copilot", "opencode", "antigravity")
     property var swarmKinds: ({ claude: true, codex: true, copilot: false, opencode: false, agy: true, antigravity: false })
-    property var detailData: ({ id: "", events: [], steps: [], gitStatus: [] })
+    property var detailData: ({ id: "", events: [], steps: [], gitStatus: [], gitFiles: [] })
+    property int inspectorTab: 0 // 0 = Journal, 1 = Terminal Live, 2 = Diff Git
+    property int expandedEventIdx: -1
+    property var screenData: ({ ok: false, text: "", lineCount: 0, kittyWin: null, detail: "" })
+    property bool screenLoading: false
+    property string diffFile: ""
+    property var diffData: ({ ok: true, file: "", added: 0, removed: 0, truncated: false, stat: "", lines: [], raw: "", detail: "" })
+    property bool diffLoading: false
+    property bool modelPickerOpen: false
+    property var modelPickerAgent: null
+    property var modelCatalog: ({ kind: "", canApplyLive: false, efforts: [], groups: [], models: [] })
+    property var modelCatalogCache: ({})
+    property bool modelCatalogLoading: false
+    property bool applyingModel: false
+    property string pickedEffort: ""
+    property string modelFilterText: ""
     property var chatHistory: [] // [{ role: "user"|"ai", text: "", executed: [] }]
     property bool aiThinking: false
     property bool sendingDirect: false
@@ -146,13 +161,142 @@ Item {
     function refreshDetail(): void {
         const ag = selectedAgent;
         if (!ag || !ag.id) {
-            detailData = { id: "", events: [], steps: [], gitStatus: [] };
+            detailData = { id: "", events: [], steps: [], gitStatus: [], gitFiles: [] };
             return;
         }
         if (detailProc.running)
             return;
-        detailProc.command = [root.agentsBin, "detail", ag.id];
+        const cmd = [root.agentsBin, "detail", ag.id];
+        if (ag.kind)
+            cmd.push("--kind", String(ag.kind));
+        if (ag.cwd)
+            cmd.push("--cwd", String(ag.cwd));
+        if (ag.pid)
+            cmd.push("--pid", String(ag.pid));
+        detailProc.command = cmd;
         detailProc.running = true;
+    }
+
+    function copyText(txt: string, label: string): void {
+        const s = String(txt || "");
+        if (!s)
+            return;
+        Quickshell.execDetached(["wl-copy", "--", s]);
+        flashToast(label || I18n.tr("Copié dans le presse-papiers ✓"));
+    }
+
+    function refreshScreen(): void {
+        const ag = selectedAgent;
+        if (!ag || !ag.id) {
+            screenData = { ok: false, text: "", lineCount: 0, kittyWin: null, detail: "" };
+            return;
+        }
+        if (screenProc.running)
+            return;
+        screenLoading = true;
+        const cmd = [root.agentsBin, "screen", ag.id];
+        if (ag.pid)
+            cmd.push("--pid", String(ag.pid));
+        screenProc.command = cmd;
+        screenProc.running = true;
+    }
+
+    function refreshDiff(filePath: string): void {
+        const ag = selectedAgent;
+        const fp = filePath !== undefined ? String(filePath) : diffFile;
+        diffFile = fp;
+        if (!ag || !ag.cwd) {
+            diffData = { ok: false, file: fp, added: 0, removed: 0, truncated: false, stat: "", lines: [], raw: "", detail: I18n.tr("Aucun dépôt Git détecté pour cet agent.") };
+            return;
+        }
+        if (diffProc.running)
+            return;
+        diffLoading = true;
+        const cmd = [root.agentsBin, "diff", String(ag.cwd)];
+        if (fp)
+            cmd.push(fp);
+        diffProc.command = cmd;
+        diffProc.running = true;
+    }
+
+    function openDiffFile(filePath: string): void {
+        inspectorTab = 2;
+        refreshDiff(filePath || "");
+    }
+
+    function detectEffortFromModel(raw: string): string {
+        const low = String(raw || "").toLowerCase();
+        if (low.indexOf("xhigh") >= 0)
+            return "xhigh";
+        if (low.indexOf("max") >= 0)
+            return "max";
+        if (low.indexOf("high") >= 0)
+            return "high";
+        if (low.indexOf("medium") >= 0 || low.indexOf("moyen") >= 0)
+            return "medium";
+        if (low.indexOf("low") >= 0 || low.indexOf("faible") >= 0)
+            return "low";
+        return "";
+    }
+
+    function openModelPicker(agent: var): void {
+        if (!agent?.kind)
+            return;
+        modelPickerAgent = agent;
+        modelPickerOpen = true;
+        modelFilterText = "";
+        pickedEffort = detectEffortFromModel(agent.model || "");
+        const k = String(agent.kind).toLowerCase();
+        if (modelCatalogCache[k]) {
+            modelCatalog = modelCatalogCache[k];
+            modelCatalogLoading = false;
+            return;
+        }
+        modelCatalog = { kind: k, canApplyLive: k !== "antigravity", efforts: [], groups: [], models: [] };
+        modelCatalogLoading = true;
+        if (modelsProc.running)
+            modelsProc.running = false;
+        modelsProc.command = [root.agentsBin, "models", k, "--catalog"];
+        modelsProc.running = true;
+    }
+
+    function closeModelPicker(): void {
+        modelPickerOpen = false;
+    }
+
+    function applyPickedModel(group: var): void {
+        const ag = modelPickerAgent;
+        if (!ag || !group || applyingModel)
+            return;
+        let targetModel = group.slug || group.base || "";
+        let targetEff = pickedEffort;
+        if (group.variants && targetEff && group.variants[targetEff]) {
+            targetModel = group.variants[targetEff].display || group.variants[targetEff].slug || targetModel;
+        } else if (group.display && (!group.efforts || group.efforts.length === 0)) {
+            targetModel = group.display;
+        }
+        applyingModel = true;
+        const cmd = [root.agentsBin, "set-model", targetModel];
+        if (targetEff)
+            cmd.push("--effort", targetEff);
+        if (ag.id)
+            cmd.push("--agent", String(ag.id));
+        if (ag.kind)
+            cmd.push("--kind", String(ag.kind));
+        setModelProc.command = cmd;
+        setModelProc.running = true;
+    }
+
+    function applyEffortOnly(eff: string): void {
+        pickedEffort = pickedEffort === eff ? "" : eff;
+    }
+
+    function filteredModelGroups(): var {
+        const groups = modelCatalog?.groups ?? [];
+        const q = (modelFilterText || "").trim().toLowerCase();
+        if (!q)
+            return groups;
+        return groups.filter(g => (g.base || "").toLowerCase().indexOf(q) >= 0 || (g.slug || "").toLowerCase().indexOf(q) >= 0);
     }
 
     function inspectAgent(agent: var, focusChat: bool): void {
@@ -160,7 +304,12 @@ Item {
             return;
         selectedId = agent.id;
         viewTab = 1;
+        expandedEventIdx = -1;
         refreshDetail();
+        if (inspectorTab === 1)
+            refreshScreen();
+        else if (inspectorTab === 2)
+            refreshDiff("");
         if (focusChat)
             directFocusTimer.restart();
     }
@@ -278,20 +427,46 @@ Item {
             canvasWires.requestPaint();
             dockInput.forceActiveFocus();
             openFocusTimer.restart();
-        } else if (dictating && dictProc.running) {
-            dictProc.write('{"cancel":true}\n');
-            dictating = false;
+        } else {
+            modelPickerOpen = false;
+            if (dictating && dictProc.running) {
+                dictProc.write('{"cancel":true}\n');
+                dictating = false;
+            }
         }
     }
 
     onSelectedIdChanged: {
-        if (shown && viewTab === 1)
+        expandedEventIdx = -1;
+        diffFile = "";
+        if (shown && viewTab === 1) {
             refreshDetail();
+            if (inspectorTab === 1)
+                refreshScreen();
+            else if (inspectorTab === 2)
+                refreshDiff("");
+        }
+    }
+
+    onInspectorTabChanged: {
+        if (!shown || viewTab !== 1)
+            return;
+        if (inspectorTab === 0)
+            refreshDetail();
+        else if (inspectorTab === 1)
+            refreshScreen();
+        else if (inspectorTab === 2)
+            refreshDiff(diffFile);
     }
 
     onViewTabChanged: {
-        if (viewTab === 1)
+        if (viewTab === 1) {
             refreshDetail();
+            if (inspectorTab === 1)
+                refreshScreen();
+            else if (inspectorTab === 2)
+                refreshDiff(diffFile);
+        }
         if (viewTab === 0)
             canvasWires.requestPaint();
         if (viewTab === 2)
@@ -335,10 +510,17 @@ Item {
     }
 
     Timer {
-        interval: 2500
+        interval: 2800
         repeat: true
-        running: root.shown && root.viewTab === 1 && !!root.selectedAgent
+        running: root.shown && root.viewTab === 1 && root.inspectorTab !== 1 && !!root.selectedAgent
         onTriggered: root.refreshDetail()
+    }
+
+    Timer {
+        interval: 1800
+        repeat: true
+        running: root.shown && root.viewTab === 1 && root.inspectorTab === 1 && !!root.selectedAgent
+        onTriggered: root.refreshScreen()
     }
 
     Process {
@@ -388,15 +570,28 @@ Item {
                     return;
                 }
                 if (m.stage === "text" && m.text) {
-                    dockInput.text = m.text;
+                    if (root.viewTab === 1)
+                        directReplyInput.text = m.text;
+                    else if (root.viewTab === 3)
+                        swarmInput.text = m.text;
+                    else
+                        dockInput.text = m.text;
                 } else if (m.stage === "state" && m.state === "erreur") {
                     root.dictating = false;
                     root.flashToast("✕ " + (m.detail || I18n.tr("Erreur micro")));
                 } else if (m.stage === "done") {
                     root.dictating = false;
                     if (m.text) {
-                        dockInput.text = m.text;
-                        dockInput.forceActiveFocus();
+                        if (root.viewTab === 1) {
+                            directReplyInput.text = m.text;
+                            directReplyInput.forceActiveFocus();
+                        } else if (root.viewTab === 3) {
+                            swarmInput.text = m.text;
+                            swarmInput.forceActiveFocus();
+                        } else {
+                            dockInput.text = m.text;
+                            dockInput.forceActiveFocus();
+                        }
                     }
                 }
             }
@@ -416,6 +611,84 @@ Item {
                 } catch (e) {}
             }
         }
+    }
+
+    Process {
+        id: screenProc
+
+        stdout: StdioCollector {
+            onStreamFinished: {
+                root.screenLoading = false;
+                try {
+                    const d = JSON.parse(text);
+                    if (d && typeof d === "object")
+                        root.screenData = d;
+                } catch (e) {}
+            }
+        }
+        onExited: root.screenLoading = false
+    }
+
+    Process {
+        id: diffProc
+
+        stdout: StdioCollector {
+            onStreamFinished: {
+                root.diffLoading = false;
+                try {
+                    const d = JSON.parse(text);
+                    if (d && typeof d === "object")
+                        root.diffData = d;
+                } catch (e) {}
+            }
+        }
+        onExited: root.diffLoading = false
+    }
+
+    Process {
+        id: modelsProc
+
+        stdout: StdioCollector {
+            onStreamFinished: {
+                root.modelCatalogLoading = false;
+                try {
+                    const d = JSON.parse(text);
+                    if (d && typeof d === "object" && d.kind) {
+                        root.modelCatalog = d;
+                        const next = Object.assign({}, root.modelCatalogCache);
+                        next[d.kind] = d;
+                        root.modelCatalogCache = next;
+                    }
+                } catch (e) {}
+            }
+        }
+        onExited: root.modelCatalogLoading = false
+    }
+
+    Process {
+        id: setModelProc
+
+        stdout: StdioCollector {
+            onStreamFinished: {
+                root.applyingModel = false;
+                try {
+                    const r = JSON.parse(text);
+                    root.flashToast((r.ok ? "✓ " : "✕ ") + (r.detail || (r.ok ? I18n.tr("Modèle appliqué") : I18n.tr("Échec changement modèle"))));
+                    if (r.ok) {
+                        root.modelPickerOpen = false;
+                        if (root.viewTab === 1) {
+                            root.refreshDetail();
+                            if (root.inspectorTab === 1)
+                                root.refreshScreen();
+                        }
+                    }
+                } catch (e) {
+                    root.flashToast(I18n.tr("Modèle mis à jour"));
+                    root.modelPickerOpen = false;
+                }
+            }
+        }
+        onExited: root.applyingModel = false
     }
 
     Process {
@@ -468,7 +741,12 @@ Item {
         opacity: root.reveal
         scale: 0.96 + 0.04 * root.reveal
 
-        Keys.onEscapePressed: root.close()
+        Keys.onEscapePressed: {
+            if (root.modelPickerOpen)
+                root.closeModelPicker();
+            else
+                root.close();
+        }
 
         // Aura supérieure colorée par l'agent leader
         Rectangle {
@@ -918,6 +1196,26 @@ Item {
                     border.color: Qt.alpha(root.fg, 0.12)
                     clip: true
 
+                    // Grille de points statique séparée (évite de repeindre des centaines de points pendant le drag)
+                    Canvas {
+                        id: canvasGrid
+
+                        anchors.fill: parent
+                        property bool isLight: Colours.light
+                        onIsLightChanged: requestPaint()
+                        onPaint: {
+                            const ctx = getContext("2d");
+                            ctx.clearRect(0, 0, width, height);
+                            ctx.fillStyle = isLight ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.08)";
+                            const step = 28;
+                            for (let gx = 18; gx < width; gx += step) {
+                                for (let gy = 18; gy < height; gy += step) {
+                                    ctx.fillRect(gx, gy, 1.5, 1.5);
+                                }
+                            }
+                        }
+                    }
+
                     Canvas {
                         id: canvasWires
 
@@ -925,14 +1223,6 @@ Item {
                         onPaint: {
                             const ctx = getContext("2d");
                             ctx.clearRect(0, 0, width, height);
-
-                            ctx.fillStyle = Colours.light ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.08)";
-                            const step = 28;
-                            for (let gx = 18; gx < width; gx += step) {
-                                for (let gy = 18; gy < height; gy += step) {
-                                    ctx.fillRect(gx, gy, 1.5, 1.5);
-                                }
-                            }
 
                             const list = root.visibleAgents;
                             if (list.length === 0)
@@ -1433,6 +1723,13 @@ Item {
                                             }
                                         }
                                         ActionChip {
+                                            visible: kCard.modelData.kind !== "antigravity"
+                                            label: I18n.tr("Modèle")
+                                            icon: "tune"
+                                            tint: root.aiTint
+                                            onClicked: root.openModelPicker(kCard.modelData)
+                                        }
+                                        ActionChip {
                                             visible: kCard.working && kCard.modelData.canStop
                                             label: I18n.tr("Stop")
                                             icon: "stop"
@@ -1853,11 +2150,47 @@ Item {
                                             font.pointSize: 10
                                             font.weight: Font.Bold
                                         }
-                                        StyledText {
-                                            visible: Boolean(inspectorPane.ag?.model)
-                                            text: `(${inspectorPane.ag?.model ?? ""})`
-                                            color: root.fgDim
-                                            font.pointSize: 8.1
+                                        // Pastille Modèle & Effort cliquable en 1 clic
+                                        Rectangle {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            width: Math.min(200, hdrModelRow.implicitWidth + 14)
+                                            height: 22
+                                            radius: 11
+                                            color: Qt.alpha(inspectorPane.tint, hdrModelArea.containsMouse ? 0.28 : 0.15)
+                                            border.width: 0.6
+                                            border.color: Qt.alpha(inspectorPane.tint, hdrModelArea.containsMouse ? 0.68 : 0.38)
+
+                                            Row {
+                                                id: hdrModelRow
+
+                                                anchors.centerIn: parent
+                                                spacing: 4
+
+                                                MaterialIcon {
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    text: "tune"
+                                                    color: inspectorPane.tint
+                                                    fontStyle: Tokens.font.icon.size(12).build()
+                                                }
+                                                StyledText {
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    width: Math.min(implicitWidth, 162)
+                                                    elide: Text.ElideRight
+                                                    text: inspectorPane.ag?.model || I18n.tr("Modèle")
+                                                    color: root.fg
+                                                    font.pointSize: 7.4
+                                                    font.weight: Font.Bold
+                                                }
+                                            }
+
+                                            MouseArea {
+                                                id: hdrModelArea
+
+                                                anchors.fill: parent
+                                                hoverEnabled: true
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: root.openModelPicker(inspectorPane.ag)
+                                            }
                                         }
                                     }
                                     StyledText {
@@ -1945,16 +2278,16 @@ Item {
                             }
                         }
 
-                        // Timeline + Étapes & Git
+                        // Zone Inspecteur (Journal / Terminal Live / Diff Git) + Étapes & Fichiers Git cliquables
                         Row {
                             width: parent.width
-                            height: parent.height - 176
+                            height: parent.height - 208
                             spacing: 10
 
+                            readonly property bool hasSide: (root.detailData.steps?.length ?? 0) > 0 || (root.detailData.gitFiles?.length ?? root.detailData.gitStatus?.length ?? 0) > 0
+
                             Rectangle {
-                                width: (root.detailData.steps?.length ?? 0) > 0 || (root.detailData.gitStatus?.length ?? 0) > 0
-                                    ? Math.round(parent.width * 0.63)
-                                    : parent.width
+                                width: parent.hasSide ? Math.round(parent.width * 0.66) : parent.width
                                 height: parent.height
                                 radius: 14
                                 color: Qt.alpha(root.fg, 0.04)
@@ -1964,19 +2297,112 @@ Item {
                                 Column {
                                     anchors.fill: parent
                                     anchors.margins: 10
-                                    spacing: 6
+                                    spacing: 7
 
-                                    StyledText {
-                                        text: I18n.tr("JOURNAL D'ACTIVITÉ EN DIRECT")
-                                        color: root.fgDim
-                                        font.pointSize: 7.2
-                                        font.weight: Font.Black
-                                        font.letterSpacing: 0.65
+                                    // Barre d'onglets Inspecteur : Journal · Terminal Live · Diff Git + Actions Copier/Rafraîchir
+                                    Item {
+                                        width: parent.width
+                                        height: 26
+
+                                        Row {
+                                            anchors.left: parent.left
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            spacing: 4
+
+                                            Repeater {
+                                                model: [
+                                                    { idx: 0, icon: "list_alt", label: I18n.tr("Journal") },
+                                                    { idx: 1, icon: "terminal", label: I18n.tr("Terminal Live") },
+                                                    { idx: 2, icon: "difference", label: I18n.tr("Diff Git") }
+                                                ]
+
+                                                Rectangle {
+                                                    id: iTab
+
+                                                    required property var modelData
+                                                    readonly property bool sel: root.inspectorTab === modelData.idx
+
+                                                    width: iTabRow.implicitWidth + 14
+                                                    height: 24
+                                                    radius: 12
+                                                    color: sel ? Qt.alpha(inspectorPane.tint, 0.22) : Qt.alpha(root.fg, iTabArea.containsMouse ? 0.1 : 0.04)
+                                                    border.width: sel ? 0.6 : 0.4
+                                                    border.color: sel ? Qt.alpha(inspectorPane.tint, 0.55) : Qt.alpha(root.fg, 0.12)
+
+                                                    Row {
+                                                        id: iTabRow
+
+                                                        anchors.centerIn: parent
+                                                        spacing: 4
+
+                                                        MaterialIcon {
+                                                            anchors.verticalCenter: parent.verticalCenter
+                                                            text: iTab.modelData.icon
+                                                            color: iTab.sel ? inspectorPane.tint : root.fgDim
+                                                            fontStyle: Tokens.font.icon.size(12).build()
+                                                            fill: iTab.sel ? 1 : 0
+                                                        }
+                                                        StyledText {
+                                                            anchors.verticalCenter: parent.verticalCenter
+                                                            text: iTab.modelData.label
+                                                            color: iTab.sel ? root.fg : root.fgDim
+                                                            font.pointSize: 7.3
+                                                            font.weight: iTab.sel ? Font.Bold : Font.DemiBold
+                                                        }
+                                                    }
+
+                                                    MouseArea {
+                                                        id: iTabArea
+
+                                                        anchors.fill: parent
+                                                        hoverEnabled: true
+                                                        cursorShape: Qt.PointingHandCursor
+                                                        onClicked: root.inspectorTab = iTab.modelData.idx
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // Actions contextuelles droite (Copier / Rafraîchir)
+                                        Row {
+                                            anchors.right: parent.right
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            spacing: 5
+
+                                            ActionChip {
+                                                visible: root.inspectorTab === 1 && root.screenData.ok && (root.screenData.text?.length ?? 0) > 0
+                                                label: I18n.tr("Copier")
+                                                icon: "content_copy"
+                                                tint: root.fg
+                                                onClicked: root.copyText(root.screenData.text, I18n.tr("Écran terminal copié ✓"))
+                                            }
+                                            ActionChip {
+                                                visible: root.inspectorTab === 2 && (root.diffData.raw?.length ?? 0) > 0
+                                                label: I18n.tr("Copier")
+                                                icon: "content_copy"
+                                                tint: root.fg
+                                                onClicked: root.copyText(root.diffData.raw, I18n.tr("Diff Git copié ✓"))
+                                            }
+                                            ActionChip {
+                                                visible: root.inspectorTab === 1 || root.inspectorTab === 2
+                                                label: root.screenLoading || root.diffLoading ? I18n.tr("…") : I18n.tr("Actualiser")
+                                                icon: "refresh"
+                                                tint: inspectorPane.tint
+                                                onClicked: {
+                                                    if (root.inspectorTab === 1)
+                                                        root.refreshScreen();
+                                                    else
+                                                        root.refreshDiff(root.diffFile);
+                                                }
+                                            }
+                                        }
                                     }
 
+                                    // ── SOUS-VUE 0 : JOURNAL D'ACTIVITÉ DÉPLIABLE ──
                                     Flickable {
+                                        visible: root.inspectorTab === 0
                                         width: parent.width
-                                        height: parent.height - 22
+                                        height: parent.height - 33
                                         contentWidth: width
                                         contentHeight: evCol.implicitHeight
                                         clip: true
@@ -1986,37 +2412,101 @@ Item {
                                             id: evCol
 
                                             width: parent.width
-                                            spacing: 5
+                                            spacing: 4
 
                                             Repeater {
                                                 model: root.detailData.events ?? []
 
-                                                Row {
-                                                    required property var modelData
-                                                    width: evCol.width
-                                                    spacing: 7
+                                                Rectangle {
+                                                    id: evItem
 
-                                                    Rectangle {
-                                                        y: 4
-                                                        width: 6
-                                                        height: 6
-                                                        radius: 3
-                                                        color: modelData.kind === "tool" ? inspectorPane.tint
-                                                            : modelData.kind === "focus" ? root.aiTint
-                                                            : modelData.kind === "reply" ? root.green
-                                                            : modelData.kind === "file" ? root.orange
-                                                            : root.fgDim
+                                                    required property var modelData
+                                                    required property int index
+                                                    readonly property bool expanded: root.expandedEventIdx === index
+                                                    readonly property string fullStr: modelData.fullText || modelData.text || ""
+                                                    readonly property bool canExpand: fullStr.length > 90 || fullStr.indexOf("\n") >= 0
+
+                                                    width: evCol.width
+                                                    height: evRow.implicitHeight + 8
+                                                    radius: 8
+                                                    color: expanded ? Qt.alpha(inspectorPane.tint, 0.1) : (evHover.containsMouse ? Qt.alpha(root.fg, 0.05) : "transparent")
+                                                    border.width: expanded ? 0.5 : 0
+                                                    border.color: Qt.alpha(inspectorPane.tint, 0.32)
+
+                                                    Row {
+                                                        id: evRow
+
+                                                        anchors.left: parent.left
+                                                        anchors.right: evCopyBtn.visible ? evCopyBtn.left : parent.right
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        anchors.leftMargin: 6
+                                                        anchors.rightMargin: 6
+                                                        spacing: 7
+
+                                                        Rectangle {
+                                                            y: 5
+                                                            width: 6
+                                                            height: 6
+                                                            radius: 3
+                                                            color: evItem.modelData.kind === "tool" ? inspectorPane.tint
+                                                                : evItem.modelData.kind === "focus" ? root.aiTint
+                                                                : evItem.modelData.kind === "reply" ? root.green
+                                                                : evItem.modelData.kind === "file" ? root.orange
+                                                                : root.fgDim
+                                                        }
+
+                                                        StyledText {
+                                                            width: parent.width - 14
+                                                            wrapMode: Text.Wrap
+                                                            maximumLineCount: evItem.expanded ? 30 : 2
+                                                            elide: evItem.expanded ? Text.ElideNone : Text.ElideRight
+                                                            text: evItem.expanded ? evItem.fullStr : (evItem.modelData.text ?? "")
+                                                            color: evItem.modelData.kind === "reply" || evItem.expanded ? root.fg : root.fgDim
+                                                            font.family: evItem.modelData.kind === "tool" ? "monospace" : Tokens.font.body.medium.family
+                                                            font.pointSize: evItem.modelData.kind === "tool" ? 7.4 : 7.8
+                                                        }
                                                     }
 
-                                                    StyledText {
-                                                        width: parent.width - 16
-                                                        wrapMode: Text.Wrap
-                                                        maximumLineCount: 2
-                                                        elide: Text.ElideRight
-                                                        text: modelData.text ?? ""
-                                                        color: modelData.kind === "reply" ? root.fg : root.fgDim
-                                                        font.family: modelData.kind === "tool" ? "monospace" : Tokens.font.body.medium.family
-                                                        font.pointSize: modelData.kind === "tool" ? 7.4 : 7.8
+                                                    MouseArea {
+                                                        id: evHover
+
+                                                        anchors.fill: parent
+                                                        anchors.rightMargin: evCopyBtn.visible ? 28 : 0
+                                                        hoverEnabled: true
+                                                        cursorShape: evItem.canExpand ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                                        onClicked: {
+                                                            if (evItem.canExpand)
+                                                                root.expandedEventIdx = evItem.expanded ? -1 : evItem.index;
+                                                        }
+                                                    }
+
+                                                    Rectangle {
+                                                        id: evCopyBtn
+
+                                                        visible: evItem.expanded || evHover.containsMouse
+                                                        anchors.right: parent.right
+                                                        anchors.top: parent.top
+                                                        anchors.margins: 4
+                                                        width: 22
+                                                        height: 22
+                                                        radius: 11
+                                                        color: Qt.alpha(root.fg, evCopyArea.containsMouse ? 0.18 : 0.08)
+
+                                                        MaterialIcon {
+                                                            anchors.centerIn: parent
+                                                            text: "content_copy"
+                                                            color: root.fgDim
+                                                            fontStyle: Tokens.font.icon.size(12).build()
+                                                        }
+
+                                                        MouseArea {
+                                                            id: evCopyArea
+
+                                                            anchors.fill: parent
+                                                            hoverEnabled: true
+                                                            cursorShape: Qt.PointingHandCursor
+                                                            onClicked: root.copyText(evItem.fullStr, I18n.tr("Entrée copiée ✓"))
+                                                        }
                                                     }
                                                 }
                                             }
@@ -2031,12 +2521,228 @@ Item {
                                             }
                                         }
                                     }
+
+                                    // ── SOUS-VUE 1 : TERMINAL KITTY LIVE ──
+                                    Rectangle {
+                                        visible: root.inspectorTab === 1
+                                        width: parent.width
+                                        height: parent.height - 33
+                                        radius: 10
+                                        color: Colours.light ? Qt.rgba(0.08, 0.09, 0.12, 0.92) : Qt.rgba(0.03, 0.04, 0.06, 0.72)
+                                        border.width: 0.5
+                                        border.color: Qt.alpha(inspectorPane.tint, 0.25)
+
+                                        Column {
+                                            anchors.fill: parent
+                                            anchors.margins: 9
+                                            spacing: 5
+
+                                            Row {
+                                                width: parent.width
+                                                spacing: 7
+
+                                                Rectangle {
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    width: 7
+                                                    height: 7
+                                                    radius: 3.5
+                                                    color: root.screenData.ok ? root.green : root.orange
+                                                }
+                                                StyledText {
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    text: root.screenData.ok
+                                                        ? (root.screenData.detail || I18n.tr("Terminal Kitty connecté"))
+                                                        : (root.screenLoading ? I18n.tr("Lecture de l'écran Kitty…") : (root.screenData.detail || I18n.tr("Aperçu terminal indisponible")))
+                                                    color: Qt.rgba(0.82, 0.86, 0.92, 0.78)
+                                                    font.family: "monospace"
+                                                    font.pointSize: 7.1
+                                                    font.weight: Font.DemiBold
+                                                }
+                                            }
+
+                                            Flickable {
+                                                id: termFlick
+
+                                                width: parent.width
+                                                height: parent.height - 20
+                                                contentWidth: width
+                                                contentHeight: Math.max(height, termTxt.implicitHeight)
+                                                clip: true
+                                                boundsBehavior: Flickable.StopAtBounds
+
+                                                onContentHeightChanged: {
+                                                    if (contentHeight > height)
+                                                        contentY = contentHeight - height;
+                                                }
+
+                                                StyledText {
+                                                    id: termTxt
+
+                                                    width: termFlick.width
+                                                    wrapMode: Text.WrapAnywhere
+                                                    text: root.screenData.ok
+                                                        ? (root.screenData.text || I18n.tr("(écran vide)"))
+                                                        : (root.screenData.detail || I18n.tr("Cet agent ne tourne pas dans Kitty."))
+                                                    color: root.screenData.ok ? "#e5edf8" : "#a8b3c4"
+                                                    font.family: "monospace"
+                                                    font.pointSize: 7.3
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // ── SOUS-VUE 2 : DIFF GIT COLORÉ ──
+                                    Column {
+                                        visible: root.inspectorTab === 2
+                                        width: parent.width
+                                        height: parent.height - 33
+                                        spacing: 6
+
+                                        // En-tête diff : fichier courant + compteur +added/-removed
+                                        Row {
+                                            width: parent.width
+                                            spacing: 7
+
+                                            Rectangle {
+                                                visible: root.diffFile.length > 0
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                width: allDiffTxt.implicitWidth + 12
+                                                height: 20
+                                                radius: 10
+                                                color: Qt.alpha(root.fg, allDiffArea.containsMouse ? 0.16 : 0.08)
+
+                                                StyledText {
+                                                    id: allDiffTxt
+
+                                                    anchors.centerIn: parent
+                                                    text: I18n.tr("← Tout")
+                                                    color: root.fg
+                                                    font.pointSize: 7
+                                                    font.weight: Font.Bold
+                                                }
+
+                                                MouseArea {
+                                                    id: allDiffArea
+
+                                                    anchors.fill: parent
+                                                    hoverEnabled: true
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    onClicked: root.refreshDiff("")
+                                                }
+                                            }
+
+                                            StyledText {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                width: Math.min(implicitWidth, parent.width - 140)
+                                                elide: Text.ElideMiddle
+                                                text: root.diffFile || I18n.tr("Diff global du dépôt")
+                                                color: root.fg
+                                                font.family: "monospace"
+                                                font.pointSize: 7.4
+                                                font.weight: Font.Bold
+                                            }
+
+                                            StyledText {
+                                                visible: (root.diffData.added ?? 0) > 0
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                text: `+${root.diffData.added ?? 0}`
+                                                color: root.green
+                                                font.family: "monospace"
+                                                font.pointSize: 7.4
+                                                font.weight: Font.Black
+                                            }
+
+                                            StyledText {
+                                                visible: (root.diffData.removed ?? 0) > 0
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                text: `-${root.diffData.removed ?? 0}`
+                                                color: root.red
+                                                font.family: "monospace"
+                                                font.pointSize: 7.4
+                                                font.weight: Font.Black
+                                            }
+                                        }
+
+                                        Rectangle {
+                                            width: parent.width
+                                            height: parent.height - 26
+                                            radius: 10
+                                            color: Colours.light ? Qt.rgba(0.08, 0.09, 0.12, 0.92) : Qt.rgba(0.03, 0.04, 0.06, 0.68)
+                                            border.width: 0.5
+                                            border.color: Qt.alpha(root.fg, 0.14)
+
+                                            Flickable {
+                                                anchors.fill: parent
+                                                anchors.margins: 8
+                                                contentWidth: width
+                                                contentHeight: diffLinesCol.implicitHeight
+                                                clip: true
+                                                boundsBehavior: Flickable.StopAtBounds
+
+                                                Column {
+                                                    id: diffLinesCol
+
+                                                    width: parent.width
+                                                    spacing: 1
+
+                                                    Repeater {
+                                                        model: root.diffData.lines ?? []
+
+                                                        Rectangle {
+                                                            id: dLn
+
+                                                            required property var modelData
+                                                            width: diffLinesCol.width
+                                                            height: dLnTxt.implicitHeight + 3
+                                                            radius: 3
+                                                            color: modelData.kind === "add" ? Qt.alpha(root.green, 0.16)
+                                                                : modelData.kind === "del" ? Qt.alpha(root.red, 0.17)
+                                                                : modelData.kind === "hunk" ? Qt.alpha(root.aiTint, 0.16)
+                                                                : "transparent"
+
+                                                            StyledText {
+                                                                id: dLnTxt
+
+                                                                anchors.left: parent.left
+                                                                anchors.right: parent.right
+                                                                anchors.verticalCenter: parent.verticalCenter
+                                                                anchors.leftMargin: 5
+                                                                anchors.rightMargin: 5
+                                                                wrapMode: Text.WrapAnywhere
+                                                                text: dLn.modelData.text ?? ""
+                                                                color: dLn.modelData.kind === "add" ? "#6ee7b7"
+                                                                    : dLn.modelData.kind === "del" ? "#fca5a5"
+                                                                    : dLn.modelData.kind === "hunk" ? "#c4b5fd"
+                                                                    : dLn.modelData.kind === "meta" ? "#93c5fd"
+                                                                    : "#d8e1ee"
+                                                                font.family: "monospace"
+                                                                font.pointSize: 7.2
+                                                                font.weight: dLn.modelData.kind === "meta" || dLn.modelData.kind === "hunk" ? Font.Bold : Font.Normal
+                                                            }
+                                                        }
+                                                    }
+
+                                                    StyledText {
+                                                        visible: (root.diffData.lines?.length ?? 0) === 0
+                                                        width: parent.width
+                                                        wrapMode: Text.Wrap
+                                                        text: root.diffLoading
+                                                            ? I18n.tr("Chargement du diff Git…")
+                                                            : (root.diffData.detail || I18n.tr("Aucune modification Git en cours sur ce chemin."))
+                                                        color: "#a8b3c4"
+                                                        font.family: "monospace"
+                                                        font.pointSize: 7.6
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
 
                             Rectangle {
-                                visible: (root.detailData.steps?.length ?? 0) > 0 || (root.detailData.gitStatus?.length ?? 0) > 0
-                                width: parent.width - Math.round(parent.width * 0.63) - 10
+                                visible: parent.hasSide
+                                width: parent.width - Math.round(parent.width * 0.66) - 10
                                 height: parent.height
                                 radius: 14
                                 color: Qt.alpha(root.fg, 0.04)
@@ -2054,7 +2760,7 @@ Item {
                                         id: sideDetCol
 
                                         width: parent.width
-                                        spacing: 8
+                                        spacing: 7
 
                                         StyledText {
                                             visible: (root.detailData.steps?.length ?? 0) > 0
@@ -2091,26 +2797,106 @@ Item {
                                         }
 
                                         StyledText {
-                                            visible: (root.detailData.gitStatus?.length ?? 0) > 0
-                                            text: I18n.tr("FICHIERS GIT")
+                                            visible: (root.detailData.gitFiles?.length ?? root.detailData.gitStatus?.length ?? 0) > 0
+                                            text: I18n.tr("FICHIERS GIT (CLIC = DIFF)")
                                             color: root.fgDim
-                                            font.pointSize: 7.2
+                                            font.pointSize: 7.0
                                             font.weight: Font.Black
-                                            font.letterSpacing: 0.65
+                                            font.letterSpacing: 0.6
                                         }
 
                                         Repeater {
-                                            model: root.detailData.gitStatus ?? []
+                                            model: root.detailData.gitFiles ?? []
 
-                                            StyledText {
-                                                required property string modelData
+                                            Rectangle {
+                                                id: gfRow
+
+                                                required property var modelData
+                                                readonly property bool active: root.inspectorTab === 2 && root.diffFile === modelData.path
+                                                readonly property color badgeCol: modelData.code === "??" || modelData.code === "A" ? root.green
+                                                    : modelData.code === "D" ? root.red
+                                                    : root.orange
+
                                                 width: sideDetCol.width
-                                                elide: Text.ElideMiddle
-                                                text: modelData
-                                                color: root.fgDim
-                                                font.family: "monospace"
-                                                font.pointSize: 7.1
+                                                height: 24
+                                                radius: 7
+                                                color: active ? Qt.alpha(inspectorPane.tint, 0.2) : (gfArea.containsMouse ? Qt.alpha(root.fg, 0.09) : "transparent")
+                                                border.width: active ? 0.5 : 0
+                                                border.color: Qt.alpha(inspectorPane.tint, 0.45)
+
+                                                Row {
+                                                    anchors.fill: parent
+                                                    anchors.leftMargin: 5
+                                                    anchors.rightMargin: 5
+                                                    spacing: 5
+
+                                                    Rectangle {
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        width: 18
+                                                        height: 15
+                                                        radius: 4
+                                                        color: Qt.alpha(gfRow.badgeCol, 0.2)
+
+                                                        StyledText {
+                                                            anchors.centerIn: parent
+                                                            text: gfRow.modelData.code ?? "M"
+                                                            color: gfRow.badgeCol
+                                                            font.family: "monospace"
+                                                            font.pointSize: 6.5
+                                                            font.weight: Font.Black
+                                                        }
+                                                    }
+
+                                                    StyledText {
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        width: parent.width - 24
+                                                        elide: Text.ElideMiddle
+                                                        text: gfRow.modelData.path ?? ""
+                                                        color: gfRow.active ? root.fg : root.fgDim
+                                                        font.family: "monospace"
+                                                        font.pointSize: 7.1
+                                                        font.weight: gfRow.active ? Font.Bold : Font.Normal
+                                                    }
+                                                }
+
+                                                MouseArea {
+                                                    id: gfArea
+
+                                                    anchors.fill: parent
+                                                    hoverEnabled: true
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    onClicked: root.openDiffFile(gfRow.modelData.path)
+                                                }
                                             }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // PUCES D'ACTIONS RAPIDES VERS L'AGENT
+                        Row {
+                            width: parent.width
+                            spacing: 6
+
+                            Repeater {
+                                model: [
+                                    { label: I18n.tr("Continuer"), icon: "fast_forward", msg: "Continue" },
+                                    { label: "/compact", icon: "compress", msg: "/compact" },
+                                    { label: I18n.tr("Vérif lint"), icon: "verified", msg: "Lance les vérifications lint et tests rapides sur les fichiers touchés." },
+                                    { label: I18n.tr("Diff Git"), icon: "difference", msg: "__diff__" }
+                                ]
+
+                                ActionChip {
+                                    required property var modelData
+                                    label: modelData.label
+                                    icon: modelData.icon
+                                    tint: modelData.msg === "__diff__" ? root.aiTint : root.fg
+                                    onClicked: {
+                                        if (modelData.msg === "__diff__") {
+                                            root.openDiffFile("");
+                                        } else {
+                                            root.sendDirectToAgent(inspectorPane.ag, modelData.msg);
                                         }
                                     }
                                 }
@@ -2157,7 +2943,12 @@ Item {
                                     clip: true
                                     selectByMouse: true
                                     activeFocusOnPress: true
-                                    Keys.onEscapePressed: root.close()
+                                    Keys.onEscapePressed: {
+            if (root.modelPickerOpen)
+                root.closeModelPicker();
+            else
+                root.close();
+        }
                                     onAccepted: {
                                         if (text.trim()) {
                                             root.sendDirectToAgent(inspectorPane.ag, text);
@@ -2717,7 +3508,12 @@ Item {
                                 wrapMode: TextEdit.Wrap
                                 selectByMouse: true
                                 activeFocusOnPress: true
-                                Keys.onEscapePressed: root.close()
+                                Keys.onEscapePressed: {
+            if (root.modelPickerOpen)
+                root.closeModelPicker();
+            else
+                root.close();
+        }
 
                                 StyledText {
                                     visible: swarmInput.text.length === 0
@@ -3020,7 +3816,12 @@ Item {
                         clip: true
                         selectByMouse: true
                         activeFocusOnPress: true
-                        Keys.onEscapePressed: root.close()
+                        Keys.onEscapePressed: {
+            if (root.modelPickerOpen)
+                root.closeModelPicker();
+            else
+                root.close();
+        }
                         onAccepted: {
                             root.submitDock(text);
                             text = "";
@@ -3095,6 +3896,339 @@ Item {
                             root.submitDock(dockInput.text);
                             dockInput.text = "";
                             dockInput.forceActiveFocus();
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── 5. OVERLAY SÉLECTEUR DE MODÈLE & EFFORT EN 1 CLIC ──
+        Rectangle {
+            id: modelPickerOverlay
+
+            visible: root.modelPickerOpen
+            anchors.fill: parent
+            z: 60
+            radius: 30
+            color: Qt.rgba(0, 0, 0, Colours.light ? 0.28 : 0.56)
+
+            MouseArea {
+                anchors.fill: parent
+                onClicked: root.closeModelPicker()
+            }
+
+            Rectangle {
+                id: pickerCard
+
+                readonly property color tint: root.modelPickerAgent ? Agents.kindColour(root.modelPickerAgent.kind) : root.aiTint
+
+                anchors.centerIn: parent
+                width: Math.min(540, parent.width - 60)
+                height: Math.min(460, parent.height - 80)
+                radius: 22
+                color: Qt.alpha(Colours.palette.m3surface, Colours.light ? 0.96 : 0.94)
+                border.width: 0.9
+                border.color: Qt.alpha(tint, 0.55)
+
+                MouseArea {
+                    anchors.fill: parent
+                }
+
+                Column {
+                    anchors.fill: parent
+                    anchors.margins: 18
+                    spacing: 12
+
+                    // En-tête du sélecteur
+                    Item {
+                        width: parent.width
+                        height: 36
+
+                        Row {
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 9
+
+                            Rectangle {
+                                width: 32
+                                height: 32
+                                radius: 11
+                                color: Qt.alpha(pickerCard.tint, 0.2)
+                                border.width: 0.6
+                                border.color: Qt.alpha(pickerCard.tint, 0.5)
+
+                                MaterialIcon {
+                                    anchors.centerIn: parent
+                                    text: "tune"
+                                    color: pickerCard.tint
+                                    fontStyle: Tokens.font.icon.size(16).build()
+                                }
+                            }
+
+                            Column {
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 1
+
+                                StyledText {
+                                    text: I18n.tr("MODÈLE & EFFORT · %1").arg(Agents.kindName(root.modelPickerAgent?.kind ?? "").toUpperCase())
+                                    color: root.fg
+                                    font.pointSize: 9.2
+                                    font.weight: Font.Black
+                                    font.letterSpacing: 0.65
+                                }
+                                StyledText {
+                                    text: `${root.modelPickerAgent?.project ?? ""} · ${root.modelPickerAgent?.model || I18n.tr("Modèle par défaut")}`
+                                    color: root.fgDim
+                                    font.pointSize: 7.5
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 28
+                            height: 28
+                            radius: 14
+                            color: Qt.alpha(root.fg, pkCloseArea.containsMouse ? 0.16 : 0.08)
+
+                            MaterialIcon {
+                                anchors.centerIn: parent
+                                text: "close"
+                                color: root.fg
+                                fontStyle: Tokens.font.icon.size(14).build()
+                            }
+
+                            MouseArea {
+                                id: pkCloseArea
+
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.closeModelPicker()
+                            }
+                        }
+                    }
+
+                    // Avertissement honnête si GUI non pilotable en direct
+                    Rectangle {
+                        visible: !root.modelCatalogLoading && !root.modelCatalog.canApplyLive
+                        width: parent.width
+                        height: 36
+                        radius: 10
+                        color: Qt.alpha(root.orange, 0.14)
+                        border.width: 0.5
+                        border.color: Qt.alpha(root.orange, 0.42)
+
+                        StyledText {
+                            anchors.fill: parent
+                            anchors.leftMargin: 10
+                            anchors.rightMargin: 10
+                            verticalAlignment: Text.AlignVCenter
+                            elide: Text.ElideRight
+                            text: I18n.tr("Fenêtre graphique : sélectionne le modèle directement dans son menu.")
+                            color: root.orange
+                            font.pointSize: 7.6
+                            font.weight: Font.DemiBold
+                        }
+                    }
+
+                    // Pilules de niveau d'effort
+                    Row {
+                        visible: (root.modelCatalog.efforts?.length ?? 0) > 0
+                        width: parent.width
+                        spacing: 6
+
+                        StyledText {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: I18n.tr("EFFORT")
+                            color: root.fgDim
+                            font.pointSize: 7
+                            font.weight: Font.Black
+                            font.letterSpacing: 0.6
+                        }
+
+                        Repeater {
+                            model: root.modelCatalog.efforts ?? []
+
+                            Rectangle {
+                                id: effPill
+
+                                required property string modelData
+                                readonly property bool sel: root.pickedEffort === modelData
+
+                                width: effTxt.implicitWidth + 18
+                                height: 24
+                                radius: 12
+                                color: sel ? Qt.alpha(pickerCard.tint, 0.28) : Qt.alpha(root.fg, effArea.containsMouse ? 0.12 : 0.06)
+                                border.width: sel ? 0.8 : 0.5
+                                border.color: sel ? Qt.alpha(pickerCard.tint, 0.72) : Qt.alpha(root.fg, 0.16)
+
+                                StyledText {
+                                    id: effTxt
+
+                                    anchors.centerIn: parent
+                                    text: effPill.modelData.toUpperCase()
+                                    color: effPill.sel ? root.fg : root.fgDim
+                                    font.pointSize: 7.1
+                                    font.weight: effPill.sel ? Font.Black : Font.DemiBold
+                                }
+
+                                MouseArea {
+                                    id: effArea
+
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.applyEffortOnly(effPill.modelData)
+                                }
+                            }
+                        }
+                    }
+
+                    // Champ de filtre rapide
+                    Rectangle {
+                        width: parent.width
+                        height: 34
+                        radius: 17
+                        color: Qt.alpha(root.fg, 0.06)
+                        border.width: 0.6
+                        border.color: modelSearchInput.activeFocus ? Qt.alpha(pickerCard.tint, 0.65) : Qt.alpha(root.fg, 0.16)
+
+                        Row {
+                            anchors.fill: parent
+                            anchors.leftMargin: 12
+                            anchors.rightMargin: 12
+                            spacing: 7
+
+                            MaterialIcon {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "search"
+                                color: root.fgDim
+                                fontStyle: Tokens.font.icon.size(14).build()
+                            }
+
+                            TextInput {
+                                id: modelSearchInput
+
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: parent.width - 24
+                                height: 28
+                                verticalAlignment: Text.AlignVCenter
+                                color: root.fg
+                                font.pointSize: 8.3
+                                clip: true
+                                text: root.modelFilterText
+                                onTextChanged: root.modelFilterText = text
+                                Keys.onEscapePressed: root.closeModelPicker()
+
+                                StyledText {
+                                    visible: modelSearchInput.text.length === 0
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: I18n.tr("Filtrer les modèles…")
+                                    color: root.fgMute
+                                    font.pointSize: 8
+                                }
+                            }
+                        }
+                    }
+
+                    // Liste des modèles disponibles
+                    Flickable {
+                        width: parent.width
+                        height: parent.height - ((root.modelCatalog.efforts?.length ?? 0) > 0 ? 156 : 124) - (!root.modelCatalogLoading && !root.modelCatalog.canApplyLive ? 48 : 0)
+                        contentWidth: width
+                        contentHeight: pkListCol.implicitHeight
+                        clip: true
+                        boundsBehavior: Flickable.StopAtBounds
+
+                        Column {
+                            id: pkListCol
+
+                            width: parent.width
+                            spacing: 6
+
+                            StyledText {
+                                visible: root.modelCatalogLoading
+                                text: I18n.tr("Chargement du catalogue de modèles…")
+                                color: root.fgDim
+                                font.pointSize: 8.2
+                            }
+
+                            Repeater {
+                                model: root.modelCatalogLoading ? [] : root.filteredModelGroups()
+
+                                Rectangle {
+                                    id: mRow
+
+                                    required property var modelData
+                                    readonly property bool isCurrent: {
+                                        const cur = String(root.modelPickerAgent?.model || "").toLowerCase();
+                                        return cur.length > 0 && (cur.indexOf(String(modelData.base || "").toLowerCase()) >= 0 || cur === String(modelData.slug || "").toLowerCase());
+                                    }
+
+                                    width: pkListCol.width
+                                    height: 44
+                                    radius: 12
+                                    scale: mRowArea.pressed ? 0.98 : 1
+                                    color: isCurrent ? Qt.alpha(pickerCard.tint, 0.2) : Qt.alpha(root.fg, mRowArea.containsMouse ? 0.11 : 0.05)
+                                    border.width: isCurrent ? 0.9 : 0.5
+                                    border.color: isCurrent ? Qt.alpha(pickerCard.tint, 0.62) : Qt.alpha(root.fg, 0.12)
+
+                                    Behavior on scale { NumberAnimation { duration: 90 } }
+
+                                    Row {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 12
+                                        anchors.rightMargin: 12
+                                        spacing: 8
+
+                                        Column {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            width: parent.width - 110
+                                            spacing: 1
+
+                                            StyledText {
+                                                width: parent.width
+                                                elide: Text.ElideRight
+                                                text: mRow.modelData.base ?? mRow.modelData.display ?? ""
+                                                color: root.fg
+                                                font.pointSize: 8.5
+                                                font.weight: Font.Bold
+                                            }
+                                            StyledText {
+                                                width: parent.width
+                                                elide: Text.ElideRight
+                                                text: mRow.modelData.slug ?? ""
+                                                color: root.fgDim
+                                                font.family: "monospace"
+                                                font.pointSize: 6.9
+                                            }
+                                        }
+
+                                        StyledText {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            width: 98
+                                            horizontalAlignment: Text.AlignRight
+                                            text: root.applyingModel
+                                                ? I18n.tr("Application…")
+                                                : (mRow.isCurrent ? I18n.tr("● Actif") : I18n.tr("Appliquer →"))
+                                            color: mRow.isCurrent ? root.green : pickerCard.tint
+                                            font.pointSize: 7.4
+                                            font.weight: Font.Bold
+                                        }
+                                    }
+
+                                    MouseArea {
+                                        id: mRowArea
+
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.applyPickedModel(mRow.modelData)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
