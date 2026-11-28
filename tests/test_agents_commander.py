@@ -238,3 +238,66 @@ def test_agent_detail_targeted_skips_full_snapshot(tmp_path, monkeypatch):
     det = mod.agent_detail("agy:inexistant", kind="agy", cwd=str(tmp_path), pid=0)
     assert det["id"] == "agy:inexistant"
     assert isinstance(det["events"], list) and isinstance(det["gitFiles"], list)
+
+
+def test_canvas_layout_persistence_and_clamping(tmp_path, monkeypatch):
+    mod = _load_agents()
+    monkeypatch.setattr(mod, "LAYOUT_FILE", tmp_path / "layout.json")
+    assert mod.load_canvas_layout()["zoom"] == 1.0
+
+    ok = mod.save_canvas_layout({"offsets": {"a1": {"dx": 42.5, "dy": -12.3}}, "panX": 18, "panY": -9, "zoom": 9.9})
+    assert ok["ok"] is True
+    loaded = mod.load_canvas_layout()
+    assert loaded["offsets"]["a1"] == {"dx": 42.5, "dy": -12.3}
+    assert loaded["panX"] == 18.0 and loaded["panY"] == -9.0
+    assert loaded["zoom"] == 1.4
+
+
+def test_swarm_dispatch_isolated_git_worktrees(tmp_path, monkeypatch):
+    import subprocess
+
+    mod = _load_agents()
+    repo = tmp_path / "demo_repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+    (repo / "README.md").write_text("hello\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True)
+
+    monkeypatch.setattr(mod, "HOME", tmp_path)
+    calls = []
+    monkeypatch.setattr(mod, "dispatch_agent", lambda k, c, p, model="", effort="": calls.append((k, c, p)))
+
+    res = mod.swarm_dispatch(
+        str(repo),
+        [
+            {"kind": "claude", "role": "Implémentation", "prompt": "Fais A"},
+            {"kind": "codex", "role": "Revue", "prompt": "Relis A"},
+        ],
+        isolate_worktree=True,
+    )
+    assert res["ok"] is True
+    assert res["count"] == 2
+    assert res["isolated"] == 2
+    assert len(calls) == 2
+    assert calls[0][1] != calls[1][1]
+    assert Path(calls[0][1], "README.md").is_file()
+    assert Path(calls[1][1], "README.md").is_file()
+
+
+def test_commander_stream_emits_done_event_and_badge_meta(capsys):
+    import json
+
+    mod = _load_agents()
+    meta = mod._extract_badge_meta("agent_send", {"agent_id": "agy:1234", "kind": "agy"})
+    assert meta == {"agent_id": "agy:1234", "kind": "agy"}
+    assert "CODEX" in mod._friendly_tool_start("agent_dispatch", {"kind": "codex"})
+
+    res = mod.commander("", stream=True)
+    assert res["ok"] is False
+    out = capsys.readouterr().out.strip().splitlines()
+    assert len(out) == 1
+    ev = json.loads(out[0])
+    assert ev["event"] == "done" and ev["ok"] is False

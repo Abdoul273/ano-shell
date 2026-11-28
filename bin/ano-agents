@@ -4145,19 +4145,73 @@ def _execute_commander_call(fname, args, ctx_state):
     return False, f"Outil inconnu : {fname}", fname, f"Outil inconnu ({fname})"
 
 
-def commander(prompt, default_cwd=""):
+def _emit_stream(obj):
+    print(json.dumps(obj, ensure_ascii=False), flush=True)
+
+
+def _friendly_tool_start(fname, args):
+    args = args if isinstance(args, dict) else {}
+    if fname == "agent_dispatch":
+        return f"Déploiement de {str(args.get('kind') or 'agent').upper()}…"
+    if fname == "agent_send":
+        return f"Envoi d'un ordre à {args.get('agent_id') or 'agent'}…"
+    if fname == "agent_set_model":
+        return f"Changement de modèle ({args.get('model') or args.get('effort') or '…'})…"
+    if fname == "agent_list_models":
+        return f"Lecture des modèles {args.get('kind') or 'agy'}…"
+    if fname == "agent_detail":
+        return f"Inspection de {args.get('agent_id') or 'agent'}…"
+    if fname == "agent_swarm":
+        return "Déploiement de l'escouade…"
+    if fname == "agent_stop":
+        return f"Arrêt de {args.get('agent_id') or 'agent'}…"
+    if fname == "agent_focus":
+        return f"Focus sur {args.get('agent_id') or 'agent'}…"
+    if fname == "hypr_workspace":
+        return f"Bureau Hyprland ({args.get('workspace') or args.get('action') or ''})…"
+    if fname == "hypr_windows":
+        return f"Fenêtres ({args.get('action') or ''})…"
+    if fname == "run_shell":
+        return f"Commande : {clip(args.get('command') or '', 42)}…"
+    return f"Action : {fname}…"
+
+
+def _extract_badge_meta(fname, args):
+    args = args if isinstance(args, dict) else {}
+    meta = {}
+    if args.get("agent_id"):
+        meta["agent_id"] = str(args["agent_id"])
+    if args.get("kind"):
+        meta["kind"] = str(args["kind"]).lower()
+    if args.get("cwd"):
+        meta["cwd"] = str(args["cwd"])
+    elif fname in ("agent_dispatch", "agent_swarm") and not meta.get("kind") and isinstance(args.get("kinds"), list) and args["kinds"]:
+        meta["kind"] = str(args["kinds"][0]).lower()
+    return meta
+
+
+def commander(prompt, default_cwd="", stream=False):
     """Commandant IA (Katana AI) : Function Calling natif multi-étapes, flotte agents, Hyprland, Shell et tout ANO-GPT."""
     prompt = (prompt or "").strip()
     if not prompt:
-        return {"ok": False, "reply": "Écris une instruction pour le Commandant IA.", "executed": []}
+        res = {"ok": False, "reply": "Écris une instruction pour le Commandant IA.", "executed": []}
+        if stream:
+            _emit_stream({"event": "done", **res})
+        return res
 
     api_key = load_gemini_key()
     if not api_key:
-        return {
+        res = {
             "ok": False,
             "reply": "Clé Gemini introuvable (configure GEMINI_API_KEY ou ~/.config/caelestia-write/config.json).",
             "executed": [],
         }
+        if stream:
+            _emit_stream({"event": "done", **res})
+        return res
+
+    if stream:
+        _emit_stream({"event": "status", "text": "Analyse de ta flotte et du contexte système…"})
 
     snap = snapshot({})
     projs = list_projects()
@@ -4237,12 +4291,17 @@ def commander(prompt, default_cwd=""):
         if time.monotonic() > deadline:
             reply = reply or "Délai maximal atteint après les actions exécutées."
             break
+        if stream:
+            _emit_stream({"event": "status", "text": "Réflexion Katana AI…" if _round == 0 else "Synthèse des résultats…"})
         model_content, err = call_gemini_tools(api_key, system, contents, tool_decls)
         if not model_content:
             if executed:
                 reply = f"Actions exécutées, mais synthèse interrompue ({err})."
                 break
-            return {"ok": False, "reply": f"Erreur Commandant IA : {err}", "executed": executed}
+            res = {"ok": False, "reply": f"Erreur Commandant IA : {err}", "executed": executed}
+            if stream:
+                _emit_stream({"event": "done", **res})
+            return res
 
         parts = model_content.get("parts") or []
         fcalls = [p["functionCall"] for p in parts if isinstance(p, dict) and "functionCall" in p]
@@ -4259,13 +4318,18 @@ def commander(prompt, default_cwd=""):
         for fc in fcalls[:8]:
             fname = str(fc.get("name") or "")
             fargs = fc.get("args") if isinstance(fc.get("args"), dict) else {}
+            if stream:
+                _emit_stream({"event": "tool_start", "name": fname, "label": _friendly_tool_start(fname, fargs)})
             try:
                 ok, out, btype, blabel = _execute_commander_call(fname, fargs, ctx_state)
             except SystemExit:
                 ok, out, btype, blabel = False, f"Échec {fname}", fname, f"Échec {fname}"
             except Exception as exc:  # noqa: BLE001
                 ok, out, btype, blabel = False, clip(str(exc), 220), fname, f"Erreur {fname}"
-            executed.append({"type": btype, "ok": bool(ok), "label": blabel})
+            badge = {"type": btype, "ok": bool(ok), "label": blabel, **_extract_badge_meta(fname, fargs)}
+            executed.append(badge)
+            if stream:
+                _emit_stream({"event": "tool_done", **badge})
             resp_parts.append({
                 "functionResponse": {
                     "name": fname,
@@ -4285,7 +4349,129 @@ def commander(prompt, default_cwd=""):
     hist.append({"role": "ai", "text": reply, "executed": executed, "ts": int(time.time() * 1000)})
     save_chat_history(hist)
 
-    return {"ok": True, "reply": reply, "executed": executed}
+    res = {"ok": True, "reply": reply, "executed": executed}
+    if stream:
+        _emit_stream({"event": "done", **res})
+    return res
+
+
+LAYOUT_FILE = HOME / ".cache/ano-shell/agentos-layout.json"
+
+
+def load_canvas_layout():
+    try:
+        if LAYOUT_FILE.is_file():
+            data = json.loads(LAYOUT_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return {
+                    "offsets": data.get("offsets") if isinstance(data.get("offsets"), dict) else {},
+                    "panX": float(data.get("panX") or 0),
+                    "panY": float(data.get("panY") or 0),
+                    "zoom": max(0.6, min(1.4, float(data.get("zoom") or 1.0))),
+                }
+    except (OSError, ValueError, TypeError):
+        pass
+    return {"offsets": {}, "panX": 0.0, "panY": 0.0, "zoom": 1.0}
+
+
+def save_canvas_layout(payload):
+    if not isinstance(payload, dict):
+        return {"ok": False}
+    offsets = payload.get("offsets") if isinstance(payload.get("offsets"), dict) else {}
+    # Borner le cache à 64 entrées récentes
+    clean_offsets = {}
+    for k, v in list(offsets.items())[-64:]:
+        if isinstance(v, dict):
+            try:
+                clean_offsets[str(k)] = {"dx": round(float(v.get("dx") or 0), 1), "dy": round(float(v.get("dy") or 0), 1)}
+            except (ValueError, TypeError):
+                pass
+    out = {
+        "offsets": clean_offsets,
+        "panX": round(float(payload.get("panX") or 0), 1),
+        "panY": round(float(payload.get("panY") or 0), 1),
+        "zoom": round(max(0.6, min(1.4, float(payload.get("zoom") or 1.0))), 2),
+    }
+    try:
+        LAYOUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = LAYOUT_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(LAYOUT_FILE)
+        return {"ok": True}
+    except OSError as exc:
+        return {"ok": False, "detail": str(exc)}
+
+
+def create_agent_worktree(cwd, kind, suffix=""):
+    """Crée un git worktree isolé pour éviter les conflits entre agents en escouade."""
+    if not cwd or not os.path.isdir(cwd):
+        return {"ok": False, "cwd": cwd or str(HOME), "branch": "", "isolated": False, "detail": "Dossier projet introuvable."}
+    try:
+        top = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=2.0, check=False,
+        )
+        if top.returncode != 0 or not top.stdout.strip():
+            return {"ok": False, "cwd": cwd, "branch": "", "isolated": False, "detail": "Pas un dépôt Git."}
+        repo_root = top.stdout.strip()
+        repo_name = re.sub(r"[^a-zA-Z0-9._-]+", "-", os.path.basename(repo_root) or "repo").strip("-")
+        kind_slug = re.sub(r"[^a-z0-9_-]+", "", str(kind or "agent").lower()) or "agent"
+        stamp = time.strftime("%H%M%S")
+        tag = f"{stamp}-{suffix}" if suffix else stamp
+        wt_base = HOME / ".cache/ano-shell/worktrees"
+        wt_base.mkdir(parents=True, exist_ok=True)
+        wt_dir = wt_base / f"{repo_name}-{kind_slug}-{tag}"
+        branch = f"swarm/{kind_slug}-{tag}"
+        res = subprocess.run(
+            ["git", "-C", repo_root, "worktree", "add", "-b", branch, str(wt_dir), "HEAD"],
+            capture_output=True, text=True, timeout=8.0, check=False,
+        )
+        if res.returncode != 0:
+            err = (res.stderr or res.stdout or "Échec git worktree").strip()[:140]
+            return {"ok": False, "cwd": cwd, "branch": "", "isolated": False, "detail": err}
+        return {"ok": True, "cwd": str(wt_dir), "branch": branch, "isolated": True, "detail": f"Worktree {branch}"}
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "cwd": cwd, "branch": "", "isolated": False, "detail": str(exc)}
+
+
+def swarm_dispatch(cwd, plan, isolate_worktree=False):
+    """Déploie une escouade multi-agents (avec rôles distincts et worktrees Git isolés optionnels)."""
+    if not isinstance(plan, list) or not plan:
+        return {"ok": False, "launched": [], "detail": "Plan d'escouade vide."}
+    launched = []
+    for idx, item in enumerate(plan[:8]):
+        if not isinstance(item, dict):
+            continue
+        k = str(item.get("kind") or "").strip().lower()
+        if not k:
+            continue
+        prompt = str(item.get("prompt") or "").strip()
+        role = str(item.get("role") or "").strip()
+        model = str(item.get("model") or "").strip()
+        effort = str(item.get("effort") or "").strip()
+        target_cwd = cwd or str(HOME)
+        branch = ""
+        isolated = False
+        if isolate_worktree and cwd and k != "antigravity":
+            wt = create_agent_worktree(cwd, k, suffix=str(idx + 1))
+            if wt.get("ok"):
+                target_cwd = wt["cwd"]
+                branch = wt["branch"]
+                isolated = True
+        dispatch_agent(k, target_cwd, prompt, model=model, effort=effort)
+        launched.append({
+            "kind": k,
+            "cwd": target_cwd,
+            "branch": branch,
+            "isolated": isolated,
+            "role": role,
+        })
+    return {
+        "ok": bool(launched),
+        "count": len(launched),
+        "isolated": sum(1 for x in launched if x["isolated"]),
+        "launched": launched,
+    }
 
 
 def launch_agent(kind):
@@ -4859,11 +5045,54 @@ if __name__ == "__main__":
             print(json.dumps([{"slug": s, "display": d} for s, d in list_agy_models()], ensure_ascii=False))
     elif cmd == "commander" and len(sys.argv) >= 3:
         cwd_arg = ""
-        args = sys.argv[2:]
-        if len(args) >= 2 and args[0] == "--cwd":
-            cwd_arg = args[1]
-            args = args[2:]
-        print(json.dumps(commander(" ".join(args), default_cwd=cwd_arg), ensure_ascii=False))
+        stream_mode = False
+        prompt_parts = []
+        i = 2
+        while i < len(sys.argv):
+            tok = sys.argv[i]
+            if tok == "--cwd" and i + 1 < len(sys.argv):
+                cwd_arg = sys.argv[i + 1]
+                i += 2
+            elif tok == "--stream":
+                stream_mode = True
+                i += 1
+            else:
+                prompt_parts.append(tok)
+                i += 1
+        res = commander(" ".join(prompt_parts), default_cwd=cwd_arg, stream=stream_mode)
+        if not stream_mode:
+            print(json.dumps(res, ensure_ascii=False))
+    elif cmd == "layout-get":
+        print(json.dumps(load_canvas_layout(), ensure_ascii=False))
+    elif cmd == "layout-set" and len(sys.argv) >= 3:
+        try:
+            payload = json.loads(sys.argv[2])
+        except ValueError:
+            payload = {}
+        print(json.dumps(save_canvas_layout(payload), ensure_ascii=False))
+    elif cmd == "swarm-dispatch" and len(sys.argv) >= 3:
+        cwd_s = ""
+        iso = False
+        plan_raw = "[]"
+        i = 2
+        while i < len(sys.argv):
+            tok = sys.argv[i]
+            if tok == "--cwd" and i + 1 < len(sys.argv):
+                cwd_s = sys.argv[i + 1]
+                i += 2
+            elif tok == "--worktree":
+                iso = True
+                i += 1
+            elif tok == "--plan" and i + 1 < len(sys.argv):
+                plan_raw = sys.argv[i + 1]
+                i += 2
+            else:
+                i += 1
+        try:
+            plan_list = json.loads(plan_raw)
+        except ValueError:
+            plan_list = []
+        print(json.dumps(swarm_dispatch(cwd_s, plan_list, isolate_worktree=iso), ensure_ascii=False))
     elif cmd == "history":
         print(json.dumps(load_chat_history(), ensure_ascii=False))
     elif cmd == "history-clear":

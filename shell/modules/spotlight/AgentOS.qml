@@ -81,9 +81,74 @@ Item {
     property string modelFilterText: ""
     property var chatHistory: [] // [{ role: "user"|"ai", text: "", executed: [] }]
     property bool aiThinking: false
+    property string aiStreamStatus: ""
+    property var aiStreamBadges: []
+    property bool aiDoneReceived: false
     property bool sendingDirect: false
     property bool dictating: false
     property string toastMsg: ""
+
+    // ── Canvas Pan/Zoom, Conflits & Persistance ──
+    property real canvasPanX: 0
+    property real canvasPanY: 0
+    property real canvasZoom: 1.0
+    property real wirePulse: 0
+    property bool layoutLoaded: false
+
+    // ── Escouade Pro (worktrees + rôles + filtre projets) ──
+    property bool swarmWorktree: true
+    property string swarmPreset: "shared" // "shared" | "impl_review" | "audit_perf" | "duel"
+    property bool swarmDeploying: false
+    property string swarmProjectFilter: ""
+
+    // ── Navigation clavier, Palette projets & File permissions ──
+    property int permIdx: 0
+    property bool projectPickerOpen: false
+    property string projectPickerQuery: ""
+    property int projectPickerCursor: 0
+    property var dockHistory: []
+    property int dockHistIdx: -1
+
+    readonly property var repoAgentCounts: {
+        const counts = {};
+        for (const a of Agents.shown) {
+            const p = String(a.cwd || "").replace(/\/+$/, "");
+            if (p)
+                counts[p] = (counts[p] || 0) + 1;
+        }
+        return counts;
+    }
+
+    readonly property var dynamicSuggestions: {
+        const out = [];
+        const projName = currentProject?.name ?? "";
+        if (Agents.perms.length > 0)
+            out.push(I18n.tr("Inspecte et explique la permission demandée par %1").arg(Agents.perms[0].project || "l'agent"));
+        if (Agents.working > 0)
+            out.push(I18n.tr("Fais-moi un bilan détaillé de mes %1 agent(s) actifs").arg(Agents.working));
+        else
+            out.push(I18n.tr("Fais-moi un bilan de tous mes agents et projets récents"));
+        if (projName) {
+            out.push(I18n.tr("Résume l'état git et les derniers changements de %1").arg(projName));
+            out.push(I18n.tr("Déploie Claude et Codex sur %1 pour auditer les bugs").arg(projName));
+        }
+        if (Agents.shown.length >= 2)
+            out.push(I18n.tr("Compare ce que font mes agents en cours et signale les conflits"));
+        else if (Agents.shown.length === 1)
+            out.push(I18n.tr("Inspecte %1 (%2) et propose la prochaine étape").arg(Agents.kindName(Agents.shown[0].kind)).arg(Agents.shown[0].project));
+        if (Agents.working > 0)
+            out.push(I18n.tr("Stoppe les agents CLI qui tournent"));
+        else if (projName)
+            out.push(I18n.tr("Lance AGY CLI sur %1 pour vérifier lint et tests").arg(projName));
+        return out.slice(0, 6);
+    }
+
+    readonly property var activePerm: {
+        if (Agents.perms.length === 0)
+            return null;
+        const idx = Math.max(0, Math.min(permIdx, Agents.perms.length - 1));
+        return Agents.perms[idx];
+    }
 
     readonly property var visibleAgents: {
         const src = Agents.shown;
@@ -316,7 +381,11 @@ Item {
 
     function resetCanvasLayout(): void {
         cardOffsets = ({});
+        canvasPanX = 0;
+        canvasPanY = 0;
+        canvasZoom = 1.0;
         canvasWires.requestPaint();
+        scheduleLayoutSave();
         flashToast(I18n.tr("Canvas réaligné"));
     }
 
@@ -325,6 +394,91 @@ Item {
         next[id] = { dx: dx, dy: dy };
         cardOffsets = next;
         canvasWires.requestPaint();
+        scheduleLayoutSave();
+    }
+
+    function setCanvasZoom(nextZ: real): void {
+        canvasZoom = Math.max(0.65, Math.min(1.35, Math.round(nextZ * 20) / 20));
+        canvasWires.requestPaint();
+        scheduleLayoutSave();
+    }
+
+    function scheduleLayoutSave(): void {
+        layoutSaveTimer.restart();
+    }
+
+    function saveLayoutNow(): void {
+        const payload = JSON.stringify({
+            offsets: cardOffsets,
+            panX: canvasPanX,
+            panY: canvasPanY,
+            zoom: canvasZoom
+        });
+        Quickshell.execDetached([root.agentsBin, "layout-set", payload]);
+    }
+
+    function loadLayout(): void {
+        if (layoutLoaded || layoutLoadProc.running)
+            return;
+        layoutLoadProc.running = true;
+    }
+
+    function cardPermFor(agent: var): var {
+        if (!agent)
+            return null;
+        return Agents.perms.find(p => (agent.pid && p.agentPid === agent.pid) || (agent.project && p.project === agent.project)) ?? null;
+    }
+
+    function repoConflictCount(agent: var): int {
+        const p = String(agent?.cwd || "").replace(/\/+$/, "");
+        return p ? (repoAgentCounts[p] ?? 0) : 0;
+    }
+
+    function filteredProjectsList(query: string): var {
+        const q = (query || "").trim().toLowerCase();
+        if (!q)
+            return projects;
+        return projects.filter(p => (p.name || "").toLowerCase().indexOf(q) >= 0
+            || (p.cwd || "").toLowerCase().indexOf(q) >= 0
+            || (p.branch || "").toLowerCase().indexOf(q) >= 0);
+    }
+
+    function selectProjectByCwd(cwd: string): void {
+        const idx = projects.findIndex(p => p.cwd === cwd);
+        if (idx >= 0)
+            projectIdx = idx;
+    }
+
+    function openProjectPicker(): void {
+        projectPickerOpen = true;
+        projectPickerQuery = "";
+        projectPickerCursor = 0;
+        projectPickerFocusTimer.restart();
+    }
+
+    function closeProjectPicker(): void {
+        projectPickerOpen = false;
+    }
+
+    function swarmRoleFor(kind: string): string {
+        if (swarmPreset === "shared")
+            return "";
+        const chosen = Agents.launchKinds.filter(k => !!swarmKinds[k]);
+        const pos = chosen.indexOf(kind);
+        if (pos < 0)
+            return "";
+        if (swarmPreset === "impl_review") {
+            const roles = [I18n.tr("Implémentation"), I18n.tr("Revue & Tests"), I18n.tr("Lint & Sécu")];
+            return roles[pos % roles.length];
+        }
+        if (swarmPreset === "audit_perf") {
+            const roles = [I18n.tr("Audit Bugs & Sécu"), I18n.tr("Perf & Mémoire"), I18n.tr("Architecture")];
+            return roles[pos % roles.length];
+        }
+        if (swarmPreset === "duel") {
+            return I18n.tr("Variante #%1").arg(pos + 1);
+        }
+        return "";
     }
 
     function toggleSwarmKind(k: string): void {
@@ -345,7 +499,7 @@ Item {
         sendProc.running = true;
     }
 
-    // Parler au Commandant IA (Katana AI)
+    // Parler au Commandant IA (Katana AI) en streaming JSONL
     function askCommander(text: string): void {
         const msg = (text || "").trim();
         if (!msg || aiThinking)
@@ -355,14 +509,74 @@ Item {
         chatHistory = next;
         viewTab = 2;
         aiThinking = true;
+        aiDoneReceived = false;
+        aiStreamStatus = I18n.tr("Analyse de ta flotte…");
+        aiStreamBadges = [];
         const cwd = currentProject?.cwd ?? "";
-        commanderProc.command = cwd ? [root.agentsBin, "commander", "--cwd", cwd, msg] : [root.agentsBin, "commander", msg];
+        commanderProc.command = cwd
+            ? [root.agentsBin, "commander", "--stream", "--cwd", cwd, msg]
+            : [root.agentsBin, "commander", "--stream", msg];
         commanderProc.running = true;
+    }
+
+    function cancelCommander(): void {
+        if (!aiThinking)
+            return;
+        if (commanderProc.running)
+            commanderProc.running = false;
+        aiThinking = false;
+        aiDoneReceived = true;
+        const next = chatHistory.slice(-18);
+        next.push({
+            role: "ai",
+            text: I18n.tr("Ordre interrompu par l'utilisateur."),
+            executed: aiStreamBadges
+        });
+        chatHistory = next;
+        aiStreamStatus = "";
+        aiStreamBadges = [];
+        flashToast(I18n.tr("Ordre Katana AI annulé"));
+    }
+
+    function badgeClickable(badge: var): bool {
+        if (!badge)
+            return false;
+        return Boolean(badge.agent_id || badge.kind || badge.cwd);
+    }
+
+    function openExecutedBadge(badge: var): void {
+        if (!badge)
+            return;
+        if (badge.agent_id) {
+            const exact = Agents.shown.find(a => a.id === badge.agent_id);
+            if (exact) {
+                inspectAgent(exact, false);
+                return;
+            }
+        }
+        if (badge.kind) {
+            const byKind = Agents.shown.find(a => a.kind === badge.kind && a.alive) ?? Agents.shown.find(a => a.kind === badge.kind);
+            if (byKind) {
+                inspectAgent(byKind, false);
+                return;
+            }
+        }
+        if (badge.cwd) {
+            selectProjectByCwd(badge.cwd);
+            viewTab = 0;
+            flashToast(I18n.tr("Projet sélectionné : %1").arg(currentProject?.name ?? badge.cwd));
+        }
     }
 
     // Exécution depuis la barre inférieure (Command Dock)
     function submitDock(promptText: string): void {
         const msg = (promptText || "").trim();
+        if (msg) {
+            const nextH = dockHistory.filter(h => h !== msg).slice(-24);
+            nextH.push(msg);
+            dockHistory = nextH;
+            dockHistIdx = -1;
+        }
         if (dockTarget === "ai") {
             if (!msg) {
                 viewTab = 2;
@@ -388,10 +602,30 @@ Item {
             flashToast(I18n.tr("Sélectionne au moins un agent"));
             return;
         }
-        for (const k of chosen)
-            Agents.dispatch(k, cwd, promptText.trim());
-        flashToast(I18n.tr("Escouade de %1 agent(s) déployée sur %2").arg(chosen.length).arg(currentProject?.name ?? "~"));
-        viewTab = 0;
+        const basePrompt = (promptText || "").trim();
+        const plan = chosen.map(k => {
+            const role = swarmRoleFor(k);
+            let finalPrompt = basePrompt;
+            if (role) {
+                if (swarmPreset === "impl_review") {
+                    finalPrompt = `[Rôle : ${role}] ` + (basePrompt || "Travaille sur la tâche en cours selon ton rôle.");
+                } else if (swarmPreset === "audit_perf") {
+                    finalPrompt = `[Rôle : ${role}] ` + (basePrompt || "Audite le dépôt sur cet axe précis et liste les actions prioritaires.");
+                } else if (swarmPreset === "duel") {
+                    finalPrompt = `[Mode Duel · ${role}] Propose ta meilleure approche indépendante : ` + (basePrompt || "Améliore ce projet.");
+                }
+            }
+            return { kind: k, role: role, prompt: finalPrompt };
+        });
+        if (swarmProc.running)
+            return;
+        swarmDeploying = true;
+        const cmd = [root.agentsBin, "swarm-dispatch", "--cwd", cwd];
+        if (swarmWorktree)
+            cmd.push("--worktree");
+        cmd.push("--plan", JSON.stringify(plan));
+        swarmProc.command = cmd;
+        swarmProc.running = true;
     }
 
     visible: morph > 0.001
@@ -421,6 +655,7 @@ Item {
             }
             refreshProjects();
             refreshHistory();
+            loadLayout();
             if (!selectedId && Agents.shown.length > 0)
                 selectedId = Agents.shown[0].id;
             refreshDetail();
@@ -429,6 +664,7 @@ Item {
             openFocusTimer.restart();
         } else {
             modelPickerOpen = false;
+            projectPickerOpen = false;
             if (dictating && dictProc.running) {
                 dictProc.write('{"cancel":true}\n');
                 dictating = false;
@@ -713,24 +949,171 @@ Item {
     Process {
         id: commanderProc
 
-        stdout: StdioCollector {
-            onStreamFinished: {
-                root.aiThinking = false;
-                let reply = I18n.tr("Réponse reçue.");
-                let executed = [];
+        stdout: SplitParser {
+            onRead: line => {
+                const raw = (line || "").trim();
+                if (!raw)
+                    return;
+                let ev;
                 try {
-                    const r = JSON.parse(text);
-                    reply = r.reply || reply;
-                    executed = r.executed ?? [];
+                    ev = JSON.parse(raw);
                 } catch (e) {
-                    reply = text.trim() || I18n.tr("Erreur de réponse du Commandant IA.");
+                    return;
                 }
-                const next = root.chatHistory.slice(-18);
-                next.push({ role: "ai", text: reply, executed: executed });
-                root.chatHistory = next;
+                if (ev.event === "status") {
+                    root.aiStreamStatus = ev.text || "";
+                } else if (ev.event === "tool_start") {
+                    root.aiStreamStatus = ev.label || ev.name || "";
+                } else if (ev.event === "tool_done") {
+                    const nextB = root.aiStreamBadges.slice();
+                    nextB.push({
+                        type: ev.type || "",
+                        ok: !!ev.ok,
+                        label: ev.label || "",
+                        agent_id: ev.agent_id || "",
+                        kind: ev.kind || "",
+                        cwd: ev.cwd || ""
+                    });
+                    root.aiStreamBadges = nextB;
+                } else if (ev.event === "done") {
+                    root.aiDoneReceived = true;
+                    root.aiThinking = false;
+                    root.aiStreamStatus = "";
+                    const next = root.chatHistory.slice(-18);
+                    next.push({
+                        role: "ai",
+                        text: ev.reply || I18n.tr("Réponse reçue."),
+                        executed: ev.executed ?? root.aiStreamBadges
+                    });
+                    root.chatHistory = next;
+                    root.aiStreamBadges = [];
+                }
             }
         }
-        onExited: root.aiThinking = false
+        onExited: {
+            if (root.aiThinking && !root.aiDoneReceived) {
+                root.aiThinking = false;
+                root.aiStreamStatus = "";
+                const next = root.chatHistory.slice(-18);
+                next.push({
+                    role: "ai",
+                    text: I18n.tr("Erreur de réponse du Commandant IA."),
+                    executed: root.aiStreamBadges
+                });
+                root.chatHistory = next;
+                root.aiStreamBadges = [];
+            }
+        }
+    }
+
+    Process {
+        id: layoutLoadProc
+
+        command: [root.agentsBin, "layout-get"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                root.layoutLoaded = true;
+                try {
+                    const d = JSON.parse(text);
+                    if (d && typeof d === "object") {
+                        if (d.offsets && typeof d.offsets === "object")
+                            root.cardOffsets = d.offsets;
+                        if (typeof d.panX === "number")
+                            root.canvasPanX = d.panX;
+                        if (typeof d.panY === "number")
+                            root.canvasPanY = d.panY;
+                        if (typeof d.zoom === "number")
+                            root.canvasZoom = Math.max(0.65, Math.min(1.35, d.zoom));
+                        canvasWires.requestPaint();
+                    }
+                } catch (e) {}
+            }
+        }
+    }
+
+    Process {
+        id: swarmProc
+
+        stdout: StdioCollector {
+            onStreamFinished: {
+                root.swarmDeploying = false;
+                try {
+                    const r = JSON.parse(text);
+                    if (r.ok) {
+                        const isoTxt = (r.isolated ?? 0) > 0
+                            ? I18n.tr(" (%1 worktree(s) isolé(s))").arg(r.isolated)
+                            : "";
+                        root.flashToast(I18n.tr("Escouade de %1 agent(s) déployée%2").arg(r.count ?? 0).arg(isoTxt));
+                        root.viewTab = 0;
+                    } else {
+                        root.flashToast("✕ " + (r.detail || I18n.tr("Échec déploiement escouade")));
+                    }
+                } catch (e) {
+                    root.flashToast(I18n.tr("Escouade déployée"));
+                    root.viewTab = 0;
+                }
+            }
+        }
+        onExited: root.swarmDeploying = false
+    }
+
+    Timer {
+        id: layoutSaveTimer
+
+        interval: 600
+        onTriggered: root.saveLayoutNow()
+    }
+
+    Timer {
+        id: projectPickerFocusTimer
+
+        interval: 40
+        onTriggered: {
+            if (root.projectPickerOpen)
+                projectSearchInput.forceActiveFocus();
+        }
+    }
+
+    // Légère pulsation des fils Bézier actifs (coupée en mode éco/batterie pour préserver l'iGPU)
+    Timer {
+        interval: 120
+        repeat: true
+        running: root.shown && root.viewTab === 0 && Agents.working > 0 && !Glass.ecoOnBattery
+        onTriggered: {
+            root.wirePulse = (root.wirePulse + 2) % 24;
+            canvasWires.requestPaint();
+        }
+    }
+
+    // ── Raccourcis clavier globaux du Studio (actifs uniquement quand le Studio est ouvert) ──
+    Shortcut { enabled: root.shown; sequence: "Ctrl+1"; onActivated: root.viewTab = 0 }
+    Shortcut { enabled: root.shown; sequence: "Ctrl+2"; onActivated: root.viewTab = 1 }
+    Shortcut { enabled: root.shown; sequence: "Ctrl+3"; onActivated: root.viewTab = 2 }
+    Shortcut { enabled: root.shown; sequence: "Ctrl+4"; onActivated: root.viewTab = 3 }
+    Shortcut { enabled: root.shown; sequence: "Ctrl+P"; onActivated: root.projectPickerOpen ? root.closeProjectPicker() : root.openProjectPicker() }
+    Shortcut { enabled: root.shown; sequence: "Ctrl+Space"; onActivated: root.toggleDictation() }
+    Shortcut { enabled: root.shown; sequence: "Alt+1"; onActivated: { root.dockTarget = "ai"; dockInput.forceActiveFocus(); } }
+    Shortcut { enabled: root.shown; sequence: "Alt+2"; onActivated: { root.dockTarget = Agents.launchKinds[0]; dockInput.forceActiveFocus(); } }
+    Shortcut { enabled: root.shown; sequence: "Alt+3"; onActivated: { root.dockTarget = Agents.launchKinds[1]; dockInput.forceActiveFocus(); } }
+    Shortcut { enabled: root.shown; sequence: "Alt+4"; onActivated: { root.dockTarget = Agents.launchKinds[2]; dockInput.forceActiveFocus(); } }
+    Shortcut { enabled: root.shown; sequence: "Alt+5"; onActivated: { root.dockTarget = Agents.launchKinds[3]; dockInput.forceActiveFocus(); } }
+    Shortcut { enabled: root.shown; sequence: "Alt+6"; onActivated: { root.dockTarget = Agents.launchKinds[4]; dockInput.forceActiveFocus(); } }
+    Shortcut { enabled: root.shown; sequence: "Alt+7"; onActivated: { root.dockTarget = Agents.launchKinds[5]; dockInput.forceActiveFocus(); } }
+    Shortcut {
+        enabled: root.shown && !!root.activePerm
+        sequence: "Alt+A"
+        onActivated: {
+            if (root.activePerm)
+                Agents.answer(root.activePerm.id, "allow");
+        }
+    }
+    Shortcut {
+        enabled: root.shown && !!root.activePerm
+        sequence: "Alt+D"
+        onActivated: {
+            if (root.activePerm)
+                Agents.answer(root.activePerm.id, "deny");
+        }
     }
 
     // ════════════════════ Contenu principal ════════════════════
@@ -742,7 +1125,9 @@ Item {
         scale: 0.96 + 0.04 * root.reveal
 
         Keys.onEscapePressed: {
-            if (root.modelPickerOpen)
+            if (root.projectPickerOpen)
+                root.closeProjectPicker();
+            else if (root.modelPickerOpen)
                 root.closeModelPicker();
             else
                 root.close();
@@ -1079,11 +1464,13 @@ Item {
             }
         }
 
-        // ── 2. BANDEAU PERMISSION PRIORITAIRE ──
+        // ── 2. BANDEAU PERMISSION PRIORITAIRE (file complète multi-permissions) ──
         Rectangle {
             id: permBanner
 
-            readonly property var perm: Agents.perm
+            readonly property var perm: root.activePerm
+            readonly property int totalPerms: Agents.perms.length
+            readonly property int safeIdx: totalPerms > 0 ? Math.max(0, Math.min(root.permIdx, totalPerms - 1)) : 0
             visible: !!perm
             anchors.left: parent.left
             anchors.right: parent.right
@@ -1113,9 +1500,60 @@ Item {
                     fill: 1
                 }
 
+                // Navigation file multi-permissions (1/N)
+                Rectangle {
+                    visible: permBanner.totalPerms > 1
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: pNavRow.implicitWidth + 10
+                    height: 24
+                    radius: 12
+                    color: Qt.alpha(root.orange, 0.22)
+                    border.width: 0.5
+                    border.color: Qt.alpha(root.orange, 0.52)
+
+                    Row {
+                        id: pNavRow
+
+                        anchors.centerIn: parent
+                        spacing: 3
+
+                        StyledText {
+                            text: "‹"
+                            color: root.fg
+                            font.pointSize: 9
+                            font.weight: Font.Black
+
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.permIdx = (permBanner.safeIdx - 1 + permBanner.totalPerms) % permBanner.totalPerms
+                            }
+                        }
+                        StyledText {
+                            text: `${permBanner.safeIdx + 1}/${permBanner.totalPerms}`
+                            color: root.orange
+                            font.pointSize: 7.4
+                            font.weight: Font.Black
+                            font.features: { "tnum": 1 }
+                        }
+                        StyledText {
+                            text: "›"
+                            color: root.fg
+                            font.pointSize: 9
+                            font.weight: Font.Black
+
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.permIdx = (permBanner.safeIdx + 1) % permBanner.totalPerms
+                            }
+                        }
+                    }
+                }
+
                 Column {
                     anchors.verticalCenter: parent.verticalCenter
-                    width: parent.width - 34
+                    width: parent.width - (permBanner.totalPerms > 1 ? 96 : 34)
                     spacing: 1
 
                     StyledText {
@@ -1216,6 +1654,39 @@ Item {
                         }
                     }
 
+                    // Pan (glisser le fond) & Zoom (molette) du Canvas Spatial
+                    MouseArea {
+                        id: canvasPanArea
+
+                        property real startX
+                        property real startY
+                        property real initPanX
+                        property real initPanY
+
+                        anchors.fill: parent
+                        acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+                        cursorShape: pressed ? Qt.ClosedHandCursor : Qt.ArrowCursor
+                        onPressed: mouse => {
+                            startX = mouse.x;
+                            startY = mouse.y;
+                            initPanX = root.canvasPanX;
+                            initPanY = root.canvasPanY;
+                        }
+                        onPositionChanged: mouse => {
+                            if (!pressed)
+                                return;
+                            root.canvasPanX = Math.max(-600, Math.min(600, initPanX + (mouse.x - startX)));
+                            root.canvasPanY = Math.max(-500, Math.min(500, initPanY + (mouse.y - startY)));
+                            canvasWires.requestPaint();
+                            root.scheduleLayoutSave();
+                        }
+                        onDoubleClicked: root.resetCanvasLayout()
+                        onWheel: wheel => {
+                            const delta = wheel.angleDelta.y > 0 ? 0.08 : -0.08;
+                            root.setCanvasZoom(root.canvasZoom + delta);
+                        }
+                    }
+
                     Canvas {
                         id: canvasWires
 
@@ -1228,14 +1699,18 @@ Item {
                             if (list.length === 0)
                                 return;
 
+                            const z = root.canvasZoom;
+                            const px = root.canvasPanX;
+                            const py = root.canvasPanY;
                             const hubX = width / 2;
                             const hubY = 44;
+                            const centers = [];
 
-                            for (let i = 0; i < Math.min(list.length, 6); i++) {
+                            for (let i = 0; i < list.length; i++) {
                                 const a = list[i];
                                 const col = i % 3;
                                 const row = Math.floor(i / 3);
-                                const colsInRow = Math.min(3, Math.min(6, list.length) - row * 3);
+                                const colsInRow = Math.min(3, list.length - row * 3);
                                 const cardW = 328;
                                 const cardH = 194;
                                 const gapX = 18;
@@ -1243,8 +1718,11 @@ Item {
                                 const baseX = Math.round((width - totalW) / 2) + col * (cardW + gapX);
                                 const baseY = 92 + row * (cardH + 18);
                                 const off = root.cardOffsets[a.id] ?? { dx: 0, dy: 0 };
-                                const cx = baseX + off.dx + cardW / 2;
-                                const cy = baseY + off.dy;
+                                const wx = baseX + off.dx;
+                                const wy = baseY + off.dy;
+                                const cx = width / 2 + (wx + cardW / 2 - width / 2) * z + px;
+                                const cy = 66 + (wy - 66) * z + py;
+                                centers.push({ x: cx, y: cy + (cardH * z) / 2, topY: cy, cwd: String(a.cwd || "").replace(/\/+$/, "") });
 
                                 const isWait = a.status === "waiting";
                                 const isWork = a.status === "working";
@@ -1256,16 +1734,43 @@ Item {
                                 const midY = (hubY + 18 + cy) / 2;
                                 ctx.bezierCurveTo(hubX, midY, cx, midY, cx, cy + 4);
                                 ctx.strokeStyle = cHex;
-                                ctx.globalAlpha = isWork || isWait ? 0.52 : 0.25;
-                                ctx.lineWidth = isWork || isWait ? 2.0 : 1.25;
+                                ctx.globalAlpha = isWork || isWait ? 0.56 : 0.24;
+                                ctx.lineWidth = isWork || isWait ? 2.1 : 1.25;
+                                if (isWork) {
+                                    ctx.setLineDash([8, 6]);
+                                    ctx.lineDashOffset = -root.wirePulse;
+                                }
                                 ctx.stroke();
 
+                                ctx.setLineDash([]);
                                 ctx.beginPath();
                                 ctx.arc(cx, cy + 4, 3.5, 0, Math.PI * 2);
                                 ctx.fillStyle = cHex;
-                                ctx.globalAlpha = 0.85;
+                                ctx.globalAlpha = 0.88;
                                 ctx.fill();
                                 ctx.restore();
+                            }
+
+                            // Liaisons pointillées ambre entre agents partageant le même dossier (alerte conflit multi-agents)
+                            for (let i = 0; i < centers.length; i++) {
+                                if (!centers[i].cwd)
+                                    continue;
+                                for (let j = i + 1; j < centers.length; j++) {
+                                    if (centers[i].cwd !== centers[j].cwd)
+                                        continue;
+                                    ctx.save();
+                                    ctx.beginPath();
+                                    ctx.moveTo(centers[i].x, centers[i].y);
+                                    const mx = (centers[i].x + centers[j].x) / 2;
+                                    const my = Math.min(centers[i].y, centers[j].y) - 28;
+                                    ctx.quadraticCurveTo(mx, my, centers[j].x, centers[j].y);
+                                    ctx.strokeStyle = "#ff9f0a";
+                                    ctx.globalAlpha = 0.62;
+                                    ctx.lineWidth = 1.6;
+                                    ctx.setLineDash([5, 5]);
+                                    ctx.stroke();
+                                    ctx.restore();
+                                }
                             }
                         }
                     }
@@ -1364,77 +1869,152 @@ Item {
                         }
                     }
 
-                    // Bouton Réaligner
-                    Rectangle {
+                    // Contrôles Canvas : Zoom (- / 100% / +) + Réaligner
+                    Row {
                         anchors.right: parent.right
                         anchors.rightMargin: 14
                         y: 24
-                        visible: Object.keys(root.cardOffsets).length > 0
-                        width: alignRow.implicitWidth + 14
-                        height: 26
-                        radius: 13
-                        color: Qt.alpha(root.fg, alignArea.containsMouse ? 0.15 : 0.08)
-                        border.width: 0.5
-                        border.color: Qt.alpha(root.fg, 0.2)
+                        z: 25
+                        spacing: 5
 
-                        Row {
-                            id: alignRow
+                        Rectangle {
+                            height: 26
+                            width: zoomRow.implicitWidth + 14
+                            radius: 13
+                            color: Qt.alpha(root.fg, 0.08)
+                            border.width: 0.5
+                            border.color: Qt.alpha(root.fg, 0.18)
 
-                            anchors.centerIn: parent
-                            spacing: 4
+                            Row {
+                                id: zoomRow
 
-                            MaterialIcon {
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: "grid_view"
-                                color: root.fgDim
-                                fontStyle: Tokens.font.icon.size(12).build()
-                            }
-                            StyledText {
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: I18n.tr("Réaligner")
-                                color: root.fg
-                                font.pointSize: 7.4
-                                font.weight: Font.DemiBold
+                                anchors.centerIn: parent
+                                spacing: 7
+
+                                StyledText {
+                                    text: "−"
+                                    color: root.fg
+                                    font.pointSize: 8.6
+                                    font.weight: Font.Black
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.setCanvasZoom(root.canvasZoom - 0.1)
+                                    }
+                                }
+                                StyledText {
+                                    text: `${Math.round(root.canvasZoom * 100)}%`
+                                    color: root.fgDim
+                                    font.pointSize: 7.2
+                                    font.weight: Font.Bold
+                                    font.features: { "tnum": 1 }
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.setCanvasZoom(1.0)
+                                    }
+                                }
+                                StyledText {
+                                    text: "+"
+                                    color: root.fg
+                                    font.pointSize: 8.6
+                                    font.weight: Font.Black
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.setCanvasZoom(root.canvasZoom + 0.1)
+                                    }
+                                }
                             }
                         }
 
-                        MouseArea {
-                            id: alignArea
+                        Rectangle {
+                            visible: Object.keys(root.cardOffsets).length > 0 || root.canvasPanX !== 0 || root.canvasPanY !== 0 || Math.abs(root.canvasZoom - 1.0) > 0.01
+                            width: alignRow.implicitWidth + 14
+                            height: 26
+                            radius: 13
+                            color: Qt.alpha(root.fg, alignArea.containsMouse ? 0.15 : 0.08)
+                            border.width: 0.5
+                            border.color: Qt.alpha(root.fg, 0.2)
 
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.resetCanvasLayout()
+                            Row {
+                                id: alignRow
+
+                                anchors.centerIn: parent
+                                spacing: 4
+
+                                MaterialIcon {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "grid_view"
+                                    color: root.fgDim
+                                    fontStyle: Tokens.font.icon.size(12).build()
+                                }
+                                StyledText {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: I18n.tr("Réaligner")
+                                    color: root.fg
+                                    font.pointSize: 7.4
+                                    font.weight: Font.DemiBold
+                                }
+                            }
+
+                            MouseArea {
+                                id: alignArea
+
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.resetCanvasLayout()
+                            }
                         }
                     }
 
-                    // Cartes agents draggables sur le Canvas
-                    Repeater {
-                        model: root.visibleAgents.slice(0, 6)
+                    // Cartes agents draggables illimitées sur le Canvas (pan + zoom)
+                    Item {
+                        id: canvasWorld
 
-                        Item {
-                            id: kCard
+                        width: parent.width
+                        height: parent.height
+                        x: root.canvasPanX
+                        y: root.canvasPanY
+                        transform: Scale {
+                            origin.x: canvasView.width / 2
+                            origin.y: 66
+                            xScale: root.canvasZoom
+                            yScale: root.canvasZoom
+                        }
 
-                            required property var modelData
-                            required property int index
+                        Repeater {
+                            model: root.visibleAgents
 
-                            readonly property bool working: modelData.status === "working"
-                            readonly property bool waiting: modelData.status === "waiting"
-                            readonly property bool done: !working && !waiting
-                            readonly property color tint: Agents.kindColour(modelData.kind)
-                            readonly property color stateCol: waiting ? root.orange : working ? tint : root.green
-                            readonly property int col: index % 3
-                            readonly property int row: Math.floor(index / 3)
-                            readonly property int colsInRow: Math.min(3, Math.min(6, root.visibleAgents.length) - row * 3)
-                            readonly property real baseX: Math.round((canvasView.width - (colsInRow * width + (colsInRow - 1) * 18)) / 2) + col * (width + 18)
-                            readonly property real baseY: 92 + row * (height + 18)
-                            readonly property var off: root.cardOffsets[modelData.id] ?? ({ dx: 0, dy: 0 })
+                            Item {
+                                id: kCard
 
-                            width: 328
-                            height: 194
-                            x: Math.max(12, Math.min(canvasView.width - width - 12, baseX + off.dx))
-                            y: Math.max(66, Math.min(canvasView.height - height - 12, baseY + off.dy))
-                            z: dragArea.pressed ? 20 : (cardHover.hovered ? 10 : 1)
+                                required property var modelData
+                                required property int index
+
+                                readonly property bool working: modelData.status === "working"
+                                readonly property bool waiting: modelData.status === "waiting"
+                                readonly property bool done: !working && !waiting
+                                readonly property color tint: Agents.kindColour(modelData.kind)
+                                readonly property color stateCol: waiting ? root.orange : working ? tint : root.green
+                                readonly property var cardPerm: root.cardPermFor(modelData)
+                                readonly property bool repoConflict: root.repoConflictCount(modelData) > 1
+                                readonly property int col: index % 3
+                                readonly property int row: Math.floor(index / 3)
+                                readonly property int colsInRow: Math.min(3, root.visibleAgents.length - row * 3)
+                                readonly property real baseX: Math.round((canvasView.width - (colsInRow * width + (colsInRow - 1) * 18)) / 2) + col * (width + 18)
+                                readonly property real baseY: 92 + row * (height + 18)
+                                readonly property var off: root.cardOffsets[modelData.id] ?? ({ dx: 0, dy: 0 })
+
+                                width: 328
+                                height: 194
+                                x: baseX + off.dx
+                                y: baseY + off.dy
+                                z: dragArea.pressed ? 20 : (cardHover.hovered ? 10 : 1)
 
                             Rectangle {
                                 anchors.fill: parent
@@ -1494,7 +2074,8 @@ Item {
                                     if (!pressed)
                                         return;
                                     const pt = mapToItem(canvasView, mouse.x, mouse.y);
-                                    root.setCardOffset(kCard.modelData.id, startDx + (pt.x - startMouseX), startDy + (pt.y - startMouseY));
+                                    const z = Math.max(0.5, root.canvasZoom);
+                                    root.setCardOffset(kCard.modelData.id, startDx + (pt.x - startMouseX) / z, startDy + (pt.y - startMouseY) / z);
                                 }
                                 onDoubleClicked: root.inspectAgent(kCard.modelData, true)
                             }
@@ -1694,9 +2275,29 @@ Item {
                                         font.pointSize: 7.1
                                         font.weight: Font.Bold
                                     }
+                                    Rectangle {
+                                        visible: kCard.repoConflict
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: confTxt.implicitWidth + 10
+                                        height: 16
+                                        radius: 8
+                                        color: Qt.alpha(root.orange, 0.2)
+                                        border.width: 0.5
+                                        border.color: Qt.alpha(root.orange, 0.52)
+
+                                        StyledText {
+                                            id: confTxt
+
+                                            anchors.centerIn: parent
+                                            text: I18n.tr("⚠ Même repo")
+                                            color: root.orange
+                                            font.pointSize: 6.5
+                                            font.weight: Font.Black
+                                        }
+                                    }
                                 }
 
-                                // Pied de carte : Parler (direct dans Studio) · Ouvrir · Stop
+                                // Pied de carte : Permission directe si en attente · sinon Parler · Ouvrir · Modèle · Stop
                                 Item {
                                     width: parent.width
                                     height: 24
@@ -1707,6 +2308,22 @@ Item {
                                         spacing: 5
 
                                         ActionChip {
+                                            visible: !!kCard.cardPerm
+                                            label: I18n.tr("Autoriser")
+                                            icon: "check"
+                                            tint: root.green
+                                            filled: true
+                                            onClicked: Agents.answer(kCard.cardPerm.id, "allow")
+                                        }
+                                        ActionChip {
+                                            visible: !!kCard.cardPerm
+                                            label: I18n.tr("Refuser")
+                                            icon: "close"
+                                            tint: root.red
+                                            onClicked: Agents.answer(kCard.cardPerm.id, "deny")
+                                        }
+                                        ActionChip {
+                                            visible: !kCard.cardPerm
                                             label: I18n.tr("Parler")
                                             icon: "chat"
                                             tint: kCard.tint
@@ -1723,14 +2340,14 @@ Item {
                                             }
                                         }
                                         ActionChip {
-                                            visible: kCard.modelData.kind !== "antigravity"
+                                            visible: !kCard.cardPerm && kCard.modelData.kind !== "antigravity"
                                             label: I18n.tr("Modèle")
                                             icon: "tune"
                                             tint: root.aiTint
                                             onClicked: root.openModelPicker(kCard.modelData)
                                         }
                                         ActionChip {
-                                            visible: kCard.working && kCard.modelData.canStop
+                                            visible: !kCard.cardPerm && kCard.working && kCard.modelData.canStop
                                             label: I18n.tr("Stop")
                                             icon: "stop"
                                             tint: root.red
@@ -1769,6 +2386,7 @@ Item {
                             HoverHandler {
                                 id: cardHover
                             }
+                        }
                         }
                     }
 
@@ -2944,7 +3562,9 @@ Item {
                                     selectByMouse: true
                                     activeFocusOnPress: true
                                     Keys.onEscapePressed: {
-            if (root.modelPickerOpen)
+            if (root.projectPickerOpen)
+                root.closeProjectPicker();
+            else if (root.modelPickerOpen)
                 root.closeModelPicker();
             else
                 root.close();
@@ -3096,14 +3716,7 @@ Item {
                                     spacing: 8
 
                                     Repeater {
-                                        model: [
-                                            I18n.tr("Fais-moi un bilan de tous mes agents en cours"),
-                                            I18n.tr("Dis à AGY CLI d'analyser l'état git du projet"),
-                                            I18n.tr("Lance Codex sur flutter_kali_cours pour vérifier dart analyze"),
-                                            I18n.tr("Déploie Claude et Copilot en parallèle sur ce projet"),
-                                            I18n.tr("Ouvre OpenCode sur ANO-GPT pour auditer la latence"),
-                                            I18n.tr("Stoppe les agents CLI qui tournent")
-                                        ]
+                                        model: root.dynamicSuggestions
 
                                         Rectangle {
                                             id: sugChip
@@ -3142,7 +3755,7 @@ Item {
                                 }
                             }
 
-                            // Messages de la conversation
+                            // Messages de la conversation (Markdown + Copier + Badges cliquables)
                             Repeater {
                                 model: root.chatHistory
 
@@ -3160,12 +3773,16 @@ Item {
 
                                         anchors.right: msgWrap.isUser ? parent.right : undefined
                                         anchors.left: msgWrap.isUser ? undefined : parent.left
-                                        width: Math.min(Math.round(parent.width * 0.78), msgCol.implicitWidth + 28)
+                                        width: Math.min(Math.round(parent.width * 0.8), msgCol.implicitWidth + 32)
                                         implicitHeight: msgCol.implicitHeight + 20
                                         radius: 16
                                         color: msgWrap.isUser ? Qt.alpha(root.aiTint, 0.2) : Qt.alpha(root.fg, 0.07)
                                         border.width: 0.6
                                         border.color: msgWrap.isUser ? Qt.alpha(root.aiTint, 0.48) : Qt.alpha(root.fg, 0.14)
+
+                                        HoverHandler {
+                                            id: msgHover
+                                        }
 
                                         Column {
                                             id: msgCol
@@ -3173,18 +3790,19 @@ Item {
                                             anchors.fill: parent
                                             anchors.margins: 10
                                             anchors.leftMargin: 14
-                                            anchors.rightMargin: 14
+                                            anchors.rightMargin: msgWrap.isUser ? 14 : 30
                                             spacing: 6
 
                                             StyledText {
-                                                width: Math.min(implicitWidth, Math.round(msgWrap.width * 0.78) - 28)
+                                                width: Math.min(implicitWidth, Math.round(msgWrap.width * 0.8) - 44)
                                                 wrapMode: Text.Wrap
+                                                textFormat: msgWrap.isUser ? Text.PlainText : Text.MarkdownText
                                                 text: msgWrap.modelData.text
                                                 color: root.fg
-                                                font.pointSize: 8.8
+                                                font.pointSize: 8.7
                                             }
 
-                                            // Badges d'actions réellement exécutées par Katana AI
+                                            // Badges d'actions réellement exécutées par Katana AI (cliquables → Cockpit / Projet)
                                             Flow {
                                                 visible: (msgWrap.modelData.executed?.length ?? 0) > 0
                                                 width: Math.min(Math.round(msgWrap.width * 0.74), 680)
@@ -3198,49 +3816,164 @@ Item {
 
                                                         required property var modelData
                                                         readonly property color bCol: modelData.ok ? root.green : root.red
+                                                        readonly property bool clickable: root.badgeClickable(modelData)
 
                                                         width: exTxt.implicitWidth + 16
                                                         height: 22
                                                         radius: 11
-                                                        color: Qt.alpha(bCol, 0.16)
-                                                        border.width: 0.5
-                                                        border.color: Qt.alpha(bCol, 0.45)
+                                                        scale: exArea.pressed && clickable ? 0.96 : 1
+                                                        color: Qt.alpha(bCol, exArea.containsMouse && clickable ? 0.28 : 0.16)
+                                                        border.width: clickable ? 0.7 : 0.5
+                                                        border.color: Qt.alpha(bCol, exArea.containsMouse && clickable ? 0.75 : 0.45)
 
                                                         StyledText {
                                                             id: exTxt
 
                                                             anchors.centerIn: parent
-                                                            text: `${exBadge.modelData.ok ? "✓" : "✕"} ${exBadge.modelData.label}`
+                                                            text: `${exBadge.modelData.ok ? "✓" : "✕"} ${exBadge.modelData.label}${exBadge.clickable ? " ↗" : ""}`
                                                             color: exBadge.bCol
                                                             font.pointSize: 7.3
                                                             font.weight: Font.Bold
                                                         }
+
+                                                        MouseArea {
+                                                            id: exArea
+
+                                                            anchors.fill: parent
+                                                            hoverEnabled: true
+                                                            cursorShape: exBadge.clickable ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                                            onClicked: {
+                                                                if (exBadge.clickable)
+                                                                    root.openExecutedBadge(exBadge.modelData);
+                                                            }
+                                                        }
                                                     }
                                                 }
+                                            }
+                                        }
+
+                                        // Bouton Copier sur les réponses Katana AI
+                                        Rectangle {
+                                            visible: !msgWrap.isUser && msgHover.hovered
+                                            anchors.top: parent.top
+                                            anchors.right: parent.right
+                                            anchors.margins: 6
+                                            width: 22
+                                            height: 22
+                                            radius: 11
+                                            color: Qt.alpha(root.fg, msgCopyArea.containsMouse ? 0.18 : 0.09)
+
+                                            MaterialIcon {
+                                                anchors.centerIn: parent
+                                                text: "content_copy"
+                                                color: root.fgDim
+                                                fontStyle: Tokens.font.icon.size(12).build()
+                                            }
+
+                                            MouseArea {
+                                                id: msgCopyArea
+
+                                                anchors.fill: parent
+                                                hoverEnabled: true
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: root.copyText(msgWrap.modelData.text, I18n.tr("Réponse copiée ✓"))
                                             }
                                         }
                                     }
                                 }
                             }
 
-                            // Indicateur réflexion Katana AI
-                            Row {
+                            // Flux temps réel Katana AI (étapes en direct + badges live + bouton Annuler)
+                            Rectangle {
                                 visible: root.aiThinking
-                                spacing: 8
+                                width: Math.min(chatCol.width, 640)
+                                height: liveStreamCol.implicitHeight + 18
+                                radius: 14
+                                color: Qt.alpha(root.aiTint, 0.1)
+                                border.width: 0.6
+                                border.color: Qt.alpha(root.aiTint, 0.36)
 
-                                MiniSpinner {
-                                    size: 22
-                                    tint: root.aiTint
-                                    spinning: root.aiThinking
-                                    done: false
-                                    letter: "✦"
-                                }
-                                StyledText {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    text: I18n.tr("Katana AI analyse ta flotte et transmet les ordres…")
-                                    color: root.aiTint
-                                    font.pointSize: 8.4
-                                    font.weight: Font.DemiBold
+                                Column {
+                                    id: liveStreamCol
+
+                                    anchors.fill: parent
+                                    anchors.margins: 9
+                                    spacing: 7
+
+                                    Item {
+                                        width: parent.width
+                                        height: 24
+
+                                        Row {
+                                            anchors.left: parent.left
+                                            anchors.right: cancelAiBtn.left
+                                            anchors.rightMargin: 8
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            spacing: 8
+
+                                            MiniSpinner {
+                                                size: 22
+                                                tint: root.aiTint
+                                                spinning: root.aiThinking
+                                                done: false
+                                                letter: "✦"
+                                            }
+                                            StyledText {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                width: parent.width - 30
+                                                elide: Text.ElideRight
+                                                text: root.aiStreamStatus || I18n.tr("Katana AI analyse ta flotte et transmet les ordres…")
+                                                color: root.aiTint
+                                                font.pointSize: 8.3
+                                                font.weight: Font.DemiBold
+                                            }
+                                        }
+
+                                        ActionChip {
+                                            id: cancelAiBtn
+
+                                            anchors.right: parent.right
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            label: I18n.tr("Annuler")
+                                            icon: "stop"
+                                            tint: root.red
+                                            onClicked: root.cancelCommander()
+                                        }
+                                    }
+
+                                    Flow {
+                                        visible: root.aiStreamBadges.length > 0
+                                        width: parent.width
+                                        spacing: 5
+
+                                        Repeater {
+                                            model: root.aiStreamBadges
+
+                                            Rectangle {
+                                                id: liveBadge
+
+                                                required property var modelData
+                                                readonly property color bCol: modelData.ok ? root.green : root.red
+
+                                                width: lbTxt.implicitWidth + 14
+                                                height: 20
+                                                radius: 10
+                                                color: Qt.alpha(bCol, 0.16)
+                                                border.width: 0.5
+                                                border.color: Qt.alpha(bCol, 0.45)
+
+                                                StyledText {
+                                                    id: lbTxt
+
+                                                    anchors.centerIn: parent
+                                                    text: `${liveBadge.modelData.ok ? "✓" : "✕"} ${liveBadge.modelData.label}`
+                                                    color: liveBadge.bCol
+                                                    font.pointSize: 7.1
+                                                    font.weight: Font.Bold
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -3275,9 +4008,54 @@ Item {
                             font.letterSpacing: 0.7
                         }
 
+                        // Filtre rapide de projets dans l'onglet Escouade
+                        Rectangle {
+                            width: parent.width
+                            height: 30
+                            radius: 15
+                            color: Qt.alpha(root.fg, 0.06)
+                            border.width: 0.5
+                            border.color: swarmProjInput.activeFocus ? Qt.alpha(root.leadTint, 0.6) : Qt.alpha(root.fg, 0.14)
+
+                            Row {
+                                anchors.fill: parent
+                                anchors.leftMargin: 10
+                                anchors.rightMargin: 10
+                                spacing: 6
+
+                                MaterialIcon {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "search"
+                                    color: root.fgDim
+                                    fontStyle: Tokens.font.icon.size(13).build()
+                                }
+                                TextInput {
+                                    id: swarmProjInput
+
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: parent.width - 20
+                                    height: 24
+                                    verticalAlignment: Text.AlignVCenter
+                                    color: root.fg
+                                    font.pointSize: 7.9
+                                    clip: true
+                                    text: root.swarmProjectFilter
+                                    onTextChanged: root.swarmProjectFilter = text
+
+                                    StyledText {
+                                        visible: swarmProjInput.text.length === 0
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: I18n.tr("Filtrer les projets…")
+                                        color: root.fgMute
+                                        font.pointSize: 7.6
+                                    }
+                                }
+                            }
+                        }
+
                         Flickable {
                             width: parent.width
-                            height: parent.height - 26
+                            height: parent.height - 64
                             contentWidth: width
                             contentHeight: projCol.implicitHeight
                             clip: true
@@ -3290,14 +4068,13 @@ Item {
                                 spacing: 5
 
                                 Repeater {
-                                    model: root.projects
+                                    model: root.filteredProjectsList(root.swarmProjectFilter)
 
                                     Rectangle {
                                         id: pRow
 
                                         required property var modelData
-                                        required property int index
-                                        readonly property bool sel: root.projectIdx === index
+                                        readonly property bool sel: root.currentProject?.cwd === modelData.cwd
 
                                         width: projCol.width
                                         height: 48
@@ -3359,7 +4136,7 @@ Item {
                                             anchors.fill: parent
                                             hoverEnabled: true
                                             cursorShape: Qt.PointingHandCursor
-                                            onClicked: root.projectIdx = pRow.index
+                                            onClicked: root.selectProjectByCwd(pRow.modelData.cwd)
                                         }
                                     }
                                 }
@@ -3378,23 +4155,131 @@ Item {
 
                     Column {
                         anchors.fill: parent
-                        anchors.margins: 18
-                        spacing: 14
+                        anchors.margins: 16
+                        spacing: 10
 
-                        Column {
-                            spacing: 2
+                        // En-tête + toggle Git Worktree isolé
+                        Item {
+                            width: parent.width
+                            height: 36
 
-                            StyledText {
-                                text: I18n.tr("DÉPLOIEMENT ESCOUADE (MULTI-AGENTS)")
-                                color: root.fg
-                                font.pointSize: 9.2
-                                font.weight: Font.Black
-                                font.letterSpacing: 0.7
+                            Column {
+                                anchors.left: parent.left
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 1
+
+                                StyledText {
+                                    text: I18n.tr("DÉPLOIEMENT ESCOUADE (MULTI-AGENTS)")
+                                    color: root.fg
+                                    font.pointSize: 9.0
+                                    font.weight: Font.Black
+                                    font.letterSpacing: 0.65
+                                }
+                                StyledText {
+                                    text: I18n.tr("Déploie tes moteurs avec rôles et isolation sur %1").arg(root.currentProject?.name ?? "~")
+                                    color: root.fgDim
+                                    font.pointSize: 7.8
+                                }
                             }
-                            StyledText {
-                                text: I18n.tr("Coche plusieurs moteurs et lance une mission en parallèle sur %1").arg(root.currentProject?.name ?? "~")
-                                color: root.fgDim
-                                font.pointSize: 8.2
+
+                            Rectangle {
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: wtRow.implicitWidth + 16
+                                height: 28
+                                radius: 14
+                                color: root.swarmWorktree ? Qt.alpha(root.green, 0.2) : Qt.alpha(root.fg, wtArea.containsMouse ? 0.12 : 0.06)
+                                border.width: 0.7
+                                border.color: root.swarmWorktree ? Qt.alpha(root.green, 0.62) : Qt.alpha(root.fg, 0.18)
+
+                                Row {
+                                    id: wtRow
+
+                                    anchors.centerIn: parent
+                                    spacing: 5
+
+                                    MaterialIcon {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: "account_tree"
+                                        color: root.swarmWorktree ? root.green : root.fgDim
+                                        fontStyle: Tokens.font.icon.size(13).build()
+                                    }
+                                    StyledText {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: I18n.tr("Worktree isolé")
+                                        color: root.swarmWorktree ? root.green : root.fgDim
+                                        font.pointSize: 7.3
+                                        font.weight: Font.Bold
+                                    }
+                                }
+
+                                MouseArea {
+                                    id: wtArea
+
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.swarmWorktree = !root.swarmWorktree
+                                }
+                            }
+                        }
+
+                        // Préréglages d'équipe avec rôles distincts
+                        Flow {
+                            width: parent.width
+                            spacing: 6
+
+                            Repeater {
+                                model: [
+                                    { id: "shared", icon: "hub", label: I18n.tr("Mission commune") },
+                                    { id: "impl_review", icon: "rate_review", label: I18n.tr("Implémentation + Revue") },
+                                    { id: "audit_perf", icon: "security", label: I18n.tr("Audit Sécu + Perf") },
+                                    { id: "duel", icon: "compare", label: I18n.tr("Duel comparatif") }
+                                ]
+
+                                Rectangle {
+                                    id: prPill
+
+                                    required property var modelData
+                                    readonly property bool sel: root.swarmPreset === modelData.id
+
+                                    width: prRow.implicitWidth + 16
+                                    height: 26
+                                    radius: 13
+                                    color: sel ? Qt.alpha(root.aiTint, 0.24) : Qt.alpha(root.fg, prArea.containsMouse ? 0.1 : 0.05)
+                                    border.width: sel ? 0.7 : 0.4
+                                    border.color: sel ? Qt.alpha(root.aiTint, 0.62) : Qt.alpha(root.fg, 0.14)
+
+                                    Row {
+                                        id: prRow
+
+                                        anchors.centerIn: parent
+                                        spacing: 4
+
+                                        MaterialIcon {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            text: prPill.modelData.icon
+                                            color: prPill.sel ? root.aiTint : root.fgDim
+                                            fontStyle: Tokens.font.icon.size(12).build()
+                                        }
+                                        StyledText {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            text: prPill.modelData.label
+                                            color: prPill.sel ? root.fg : root.fgDim
+                                            font.pointSize: 7.3
+                                            font.weight: prPill.sel ? Font.Bold : Font.DemiBold
+                                        }
+                                    }
+
+                                    MouseArea {
+                                        id: prArea
+
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.swarmPreset = prPill.modelData.id
+                                    }
+                                }
                             }
                         }
 
@@ -3411,9 +4296,10 @@ Item {
                                     required property string modelData
                                     readonly property bool on: !!root.swarmKinds[modelData]
                                     readonly property color tint: Agents.kindColour(modelData)
+                                    readonly property string assignedRole: on ? root.swarmRoleFor(modelData) : ""
 
                                     width: Math.floor((parent.width - 16) / 3)
-                                    height: 54
+                                    height: 52
                                     radius: 14
                                     color: on ? Qt.alpha(tint, 0.22) : Qt.alpha(root.fg, swBoxArea.containsMouse ? 0.09 : 0.04)
                                     border.width: on ? 1 : 0.5
@@ -3421,12 +4307,12 @@ Item {
 
                                     Row {
                                         anchors.left: parent.left
-                                        anchors.leftMargin: 12
+                                        anchors.leftMargin: 11
                                         anchors.verticalCenter: parent.verticalCenter
-                                        spacing: 9
+                                        spacing: 8
 
                                         MiniSpinner {
-                                            size: 28
+                                            size: 26
                                             tint: swBox.tint
                                             spinning: false
                                             done: false
@@ -3438,13 +4324,16 @@ Item {
                                             StyledText {
                                                 text: Agents.kindName(swBox.modelData)
                                                 color: root.fg
-                                                font.pointSize: 8.8
+                                                font.pointSize: 8.6
                                                 font.weight: Font.Bold
                                             }
                                             StyledText {
-                                                text: swBox.on ? I18n.tr("Sélectionné") : I18n.tr("Cliquer pour ajouter")
+                                                text: swBox.assignedRole
+                                                    ? swBox.assignedRole
+                                                    : (swBox.on ? I18n.tr("Sélectionné") : I18n.tr("Cliquer pour ajouter"))
                                                 color: swBox.on ? swBox.tint : root.fgDim
-                                                font.pointSize: 7.1
+                                                font.pointSize: 7.0
+                                                font.weight: swBox.assignedRole ? Font.Bold : Font.Normal
                                             }
                                         }
                                     }
@@ -3487,7 +4376,7 @@ Item {
 
                         Rectangle {
                             width: parent.width
-                            height: 92
+                            height: 82
                             radius: 14
                             color: Qt.alpha(root.fg, 0.06)
                             border.width: 0.75
@@ -3502,24 +4391,32 @@ Item {
                                 id: swarmInput
 
                                 anchors.fill: parent
-                                anchors.margins: 12
+                                anchors.margins: 10
                                 color: root.fg
-                                font.pointSize: 9
+                                font.pointSize: 8.8
                                 wrapMode: TextEdit.Wrap
                                 selectByMouse: true
                                 activeFocusOnPress: true
                                 Keys.onEscapePressed: {
-            if (root.modelPickerOpen)
-                root.closeModelPicker();
-            else
-                root.close();
-        }
+                                    if (root.projectPickerOpen)
+                                        root.closeProjectPicker();
+                                    else if (root.modelPickerOpen)
+                                        root.closeModelPicker();
+                                    else
+                                        root.close();
+                                }
+                                Keys.onPressed: event => {
+                                    if ((event.modifiers & Qt.ControlModifier) && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter)) {
+                                        root.launchSwarm(swarmInput.text);
+                                        event.accepted = true;
+                                    }
+                                }
 
                                 StyledText {
                                     visible: swarmInput.text.length === 0
-                                    text: I18n.tr("Écris ici la mission commune à envoyer à ton escouade d'agents…")
+                                    text: I18n.tr("Écris la mission à envoyer à l'escouade (Ctrl+Entrée pour déployer)…")
                                     color: root.fgMute
-                                    font.pointSize: 9
+                                    font.pointSize: 8.6
                                 }
                             }
                         }
@@ -3527,8 +4424,8 @@ Item {
                         Rectangle {
                             anchors.right: parent.right
                             width: deployRow.implicitWidth + 28
-                            height: 38
-                            radius: 19
+                            height: 36
+                            radius: 18
                             scale: deployArea.pressed ? 0.96 : 1
                             color: Qt.alpha(root.leadTint, deployArea.containsMouse ? 0.34 : 0.24)
                             border.width: 1
@@ -3551,9 +4448,11 @@ Item {
                                 }
                                 StyledText {
                                     anchors.verticalCenter: parent.verticalCenter
-                                    text: I18n.tr("Déployer l'escouade (%1)").arg(root.swarmCount)
+                                    text: root.swarmDeploying
+                                        ? I18n.tr("Déploiement…")
+                                        : I18n.tr("Déployer l'escouade (%1)").arg(root.swarmCount)
                                     color: root.fg
-                                    font.pointSize: 8.8
+                                    font.pointSize: 8.6
                                     font.weight: Font.Bold
                                 }
                             }
@@ -3786,15 +4685,11 @@ Item {
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            if (root.projects.length > 0)
-                                root.projectIdx = (root.projectIdx + 1) % root.projects.length;
-                            dockInput.forceActiveFocus();
-                        }
+                        onClicked: root.openProjectPicker()
                     }
                 }
 
-                // Champ texte principal (focus garanti au clic et à l'ouverture !)
+                // Champ texte principal (focus garanti + historique ↑/↓)
                 Item {
                     anchors.verticalCenter: parent.verticalCenter
                     width: Math.max(160, commandDock.width - dockEnginesRow.width - projChip.width - goBtn.width - 42)
@@ -3817,11 +4712,33 @@ Item {
                         selectByMouse: true
                         activeFocusOnPress: true
                         Keys.onEscapePressed: {
-            if (root.modelPickerOpen)
-                root.closeModelPicker();
-            else
-                root.close();
-        }
+                            if (root.projectPickerOpen)
+                                root.closeProjectPicker();
+                            else if (root.modelPickerOpen)
+                                root.closeModelPicker();
+                            else
+                                root.close();
+                        }
+                        Keys.onUpPressed: {
+                            if (root.dockHistory.length === 0)
+                                return;
+                            const nextIdx = root.dockHistIdx < 0
+                                ? root.dockHistory.length - 1
+                                : Math.max(0, root.dockHistIdx - 1);
+                            root.dockHistIdx = nextIdx;
+                            dockInput.text = root.dockHistory[nextIdx] || "";
+                        }
+                        Keys.onDownPressed: {
+                            if (root.dockHistIdx < 0)
+                                return;
+                            if (root.dockHistIdx >= root.dockHistory.length - 1) {
+                                root.dockHistIdx = -1;
+                                dockInput.text = "";
+                            } else {
+                                root.dockHistIdx = root.dockHistIdx + 1;
+                                dockInput.text = root.dockHistory[root.dockHistIdx] || "";
+                            }
+                        }
                         onAccepted: {
                             root.submitDock(text);
                             text = "";
@@ -4228,6 +5145,259 @@ Item {
                                         onClicked: root.applyPickedModel(mRow.modelData)
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // ── 6. OVERLAY PALETTE PROJETS RAPIDE (Ctrl+P ou clic sur projChip) ──
+        Rectangle {
+            id: projectPickerOverlay
+
+            readonly property var hits: root.filteredProjectsList(root.projectPickerQuery)
+
+            visible: root.projectPickerOpen
+            anchors.fill: parent
+            z: 65
+            radius: 30
+            color: Qt.rgba(0, 0, 0, Colours.light ? 0.28 : 0.56)
+
+            MouseArea {
+                anchors.fill: parent
+                onClicked: root.closeProjectPicker()
+            }
+
+            Rectangle {
+                anchors.centerIn: parent
+                width: Math.min(520, parent.width - 60)
+                height: Math.min(430, parent.height - 90)
+                radius: 22
+                color: Qt.alpha(Colours.palette.m3surface, Colours.light ? 0.96 : 0.94)
+                border.width: 0.9
+                border.color: Qt.alpha(root.leadTint, 0.55)
+
+                MouseArea {
+                    anchors.fill: parent
+                }
+
+                Column {
+                    anchors.fill: parent
+                    anchors.margins: 18
+                    spacing: 10
+
+                    Item {
+                        width: parent.width
+                        height: 28
+
+                        Row {
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 7
+
+                            MaterialIcon {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "folder_code"
+                                color: root.leadTint
+                                fontStyle: Tokens.font.icon.size(17).build()
+                                fill: 1
+                            }
+                            StyledText {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: I18n.tr("CHANGER DE PROJET (Ctrl+P)")
+                                color: root.fg
+                                font.pointSize: 9.0
+                                font.weight: Font.Black
+                                font.letterSpacing: 0.65
+                            }
+                        }
+
+                        Rectangle {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 26
+                            height: 26
+                            radius: 13
+                            color: Qt.alpha(root.fg, ppCloseArea.containsMouse ? 0.16 : 0.08)
+
+                            MaterialIcon {
+                                anchors.centerIn: parent
+                                text: "close"
+                                color: root.fg
+                                fontStyle: Tokens.font.icon.size(14).build()
+                            }
+
+                            MouseArea {
+                                id: ppCloseArea
+
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.closeProjectPicker()
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        width: parent.width
+                        height: 36
+                        radius: 18
+                        color: Qt.alpha(root.fg, 0.07)
+                        border.width: 0.7
+                        border.color: Qt.alpha(root.leadTint, 0.6)
+
+                        Row {
+                            anchors.fill: parent
+                            anchors.leftMargin: 12
+                            anchors.rightMargin: 12
+                            spacing: 7
+
+                            MaterialIcon {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "search"
+                                color: root.leadTint
+                                fontStyle: Tokens.font.icon.size(15).build()
+                            }
+                            TextInput {
+                                id: projectSearchInput
+
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: parent.width - 24
+                                height: 28
+                                verticalAlignment: Text.AlignVCenter
+                                color: root.fg
+                                font.pointSize: 8.6
+                                clip: true
+                                text: root.projectPickerQuery
+                                onTextChanged: {
+                                    root.projectPickerQuery = text;
+                                    root.projectPickerCursor = 0;
+                                }
+                                Keys.onEscapePressed: root.closeProjectPicker()
+                                Keys.onDownPressed: {
+                                    if (projectPickerOverlay.hits.length > 0)
+                                        root.projectPickerCursor = Math.min(projectPickerOverlay.hits.length - 1, root.projectPickerCursor + 1);
+                                }
+                                Keys.onUpPressed: {
+                                    if (projectPickerOverlay.hits.length > 0)
+                                        root.projectPickerCursor = Math.max(0, root.projectPickerCursor - 1);
+                                }
+                                onAccepted: {
+                                    const hits = projectPickerOverlay.hits;
+                                    if (hits.length > 0) {
+                                        const chosen = hits[Math.max(0, Math.min(root.projectPickerCursor, hits.length - 1))];
+                                        root.selectProjectByCwd(chosen.cwd);
+                                        root.closeProjectPicker();
+                                        dockInput.forceActiveFocus();
+                                    }
+                                }
+
+                                StyledText {
+                                    visible: projectSearchInput.text.length === 0
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: I18n.tr("Chercher un projet par nom, chemin ou branche…")
+                                    color: root.fgMute
+                                    font.pointSize: 8.2
+                                }
+                            }
+                        }
+                    }
+
+                    Flickable {
+                        width: parent.width
+                        height: parent.height - 84
+                        contentWidth: width
+                        contentHeight: ppCol.implicitHeight
+                        clip: true
+                        boundsBehavior: Flickable.StopAtBounds
+
+                        Column {
+                            id: ppCol
+
+                            width: parent.width
+                            spacing: 5
+
+                            Repeater {
+                                model: projectPickerOverlay.hits
+
+                                Rectangle {
+                                    id: ppItem
+
+                                    required property var modelData
+                                    required property int index
+                                    readonly property bool sel: root.projectPickerCursor === index || root.currentProject?.cwd === modelData.cwd
+
+                                    width: ppCol.width
+                                    height: 44
+                                    radius: 12
+                                    color: root.projectPickerCursor === index
+                                        ? Qt.alpha(root.leadTint, 0.22)
+                                        : Qt.alpha(root.fg, ppArea.containsMouse ? 0.1 : 0.04)
+                                    border.width: sel ? 0.7 : 0.4
+                                    border.color: sel ? Qt.alpha(root.leadTint, 0.56) : Qt.alpha(root.fg, 0.1)
+
+                                    Row {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 12
+                                        anchors.rightMargin: 12
+                                        spacing: 8
+
+                                        Column {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            width: parent.width - 94
+                                            spacing: 1
+
+                                            StyledText {
+                                                width: parent.width
+                                                elide: Text.ElideRight
+                                                text: ppItem.modelData.name
+                                                color: root.fg
+                                                font.pointSize: 8.6
+                                                font.weight: Font.Bold
+                                            }
+                                            StyledText {
+                                                width: parent.width
+                                                elide: Text.ElideMiddle
+                                                text: ppItem.modelData.cwd
+                                                color: root.fgDim
+                                                font.family: "monospace"
+                                                font.pointSize: 6.9
+                                            }
+                                        }
+
+                                        StyledText {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            width: 84
+                                            horizontalAlignment: Text.AlignRight
+                                            elide: Text.ElideRight
+                                            visible: Boolean(ppItem.modelData.branch)
+                                            text: `⎇ ${ppItem.modelData.branch}`
+                                            color: ppItem.modelData.active ? root.green : root.fgDim
+                                            font.pointSize: 7.2
+                                            font.weight: Font.DemiBold
+                                        }
+                                    }
+
+                                    MouseArea {
+                                        id: ppArea
+
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            root.selectProjectByCwd(ppItem.modelData.cwd);
+                                            root.closeProjectPicker();
+                                            dockInput.forceActiveFocus();
+                                        }
+                                    }
+                                }
+                            }
+
+                            StyledText {
+                                visible: projectPickerOverlay.hits.length === 0
+                                text: I18n.tr("Aucun projet correspondant.")
+                                color: root.fgDim
+                                font.pointSize: 8.2
                             }
                         }
                     }
